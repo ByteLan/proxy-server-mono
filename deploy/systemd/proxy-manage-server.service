@@ -1,0 +1,22 @@
+[Unit]
+Description=Proxy management control plane
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=proxy-manager
+Group=proxy-manager
+EnvironmentFile=/etc/proxy-manage-server/manager.env
+ExecStart=/opt/proxy-manage-server/bin/proxy-manage-server
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/proxy-manage-server
+
+[Install]
+WantedBy=multi-user.target

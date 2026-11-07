@@ -1,0 +1,29 @@
+# API contract (v1)
+
+All JSON errors: `{ "error": "message" }`. List responses are bare arrays, never null. IDs opaque strings. Times Unix seconds.
+
+## Admin
+
+All `/api/admin/*` require `Authorization: Bearer <ADMIN_TOKEN>` (static high-entropy admin token; UI login stores it in sessionStorage). `GET /api/admin/health` -> `{ "ok": true }`.
+
+- `GET /api/admin/nodes` -> `model.Node[]`, endpoint secrets redacted (password, username, uuid, public_key, short_id); heartbeat online != protocol connectivity.
+- `PATCH /api/admin/nodes/:id` JSON `{ "name": "...", "enabled": true }` -> Node. Both fields required.
+- `DELETE /api/admin/nodes/:id` -> 204. Permanently revokes agent token and removes it from subscription selections; requires re-enrollment with a new identity.
+- `GET /api/admin/subscriptions` -> `model.Subscription[]`.
+- `POST /api/admin/subscriptions` JSON `{ "name":"...", "node_ids":["..."], "protocols":["hysteria2","vless"], "enabled":true }` -> 201 `{ "subscription": Subscription, "url":"<PUBLIC_URL>/sub/<token>" }`. Empty protocols = all supported protocols. Empty node_ids allowed, returns empty configuration.
+- `PUT /api/admin/subscriptions/:id` same body -> Subscription. Selection changes affect next GET of existing URL, without token rotation.
+- `POST /api/admin/subscriptions/:id/rotate` -> `{ "url": "..." }`, invalidates old link. URL shown only at creation/rotation, save it then.
+- `DELETE /api/admin/subscriptions/:id` -> 204, invalidates link.
+- `GET /api/admin/subscriptions/:id/preview` -> full YAML (contains credentials; do not log).
+
+## Agent (all requests bearer-authenticated)
+
+- `POST /api/agent/register` uses ENROLL_TOKEN, body model.RegisterRequest, returns 201 `{ "token":"<new node token>" }`. Existing node ID -> 409, never overwrites an identity. Persist returned token locally.
+- `POST /api/agent/heartbeat` uses node token, body model.HeartbeatRequest. 200 `{ "ok":true }`. Send complete endpoints on first heartbeat after process start and whenever config_hash changes; ordinary heartbeats omit endpoints. Manager does not derive endpoint addresses from source IP. Node token is bound to ID; disabled node may heartbeat but is excluded from subscriptions.
+
+## Public
+
+- `GET /healthz` -> `{ "ok":true }`.
+- `GET /sub/:token` -> full mihomo YAML, dynamic database lookup; no login; token is capability credential, returned only once. `Cache-Control: no-store`, `profile-update-interval: 1`. Disabled or revoked token -> 404. Empty selection returns a valid config with DIRECT only. Offline heartbeat does NOT automatically remove a selected endpoint.
+
+Frontend: Vite proxies `/api`, `/sub` to localhost:8080. Production assets embedded in manager binary. No npm/Node required on target VPS. Manager supports direct HTTPS via the paired TLS_CERT_FILE/TLS_KEY_FILE environment variables; alternatively use an existing TLS reverse proxy. Management server never handles proxy traffic.
