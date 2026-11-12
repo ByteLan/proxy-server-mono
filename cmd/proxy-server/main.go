@@ -12,6 +12,8 @@ import (
 	"syscall"
 
 	"proxy-mono/internal/agent"
+	"proxy-mono/internal/updatecmd"
+	"proxy-mono/internal/version"
 )
 
 func main() {
@@ -25,13 +27,15 @@ func main() {
 
 func execute(ctx context.Context, args []string, output io.Writer) error {
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" || args[0] == "help" {
-		fmt.Fprintln(output, "Usage: proxy-server init [options] | run --config FILE | version\n\ninit generates a node identity, HY2/REALITY credentials and local core configs.\nrun supervises proxy cores and reports status to the manager.\nUse init --help or run --help for options.\nEnrollment: ENROLL_TOKEN environment variable, or init --enroll-token.\nCore binaries must be installed separately with tested, pinned versions.")
+		fmt.Fprintln(output, "Usage: proxy-server init [options] | run --config FILE | version | update [options]\n\ninit generates a node identity, HY2/REALITY credentials and local core configs.\nrun supervises proxy cores and reports status to the manager.\nUse init --help or run --help for options.\nEnrollment: ENROLL_TOKEN environment variable, or init --enroll-token.\nCore binaries must be installed separately with tested, pinned versions.")
 		return nil
 	}
 	switch args[0] {
 	case "version":
-		fmt.Fprintln(output, agent.Version)
+		fmt.Fprintln(output, version.String("proxy-server"))
 		return nil
+	case "update":
+		return updatecmd.Run(ctx, "proxy-server", args[1:], output)
 	case "init":
 		flags := flag.NewFlagSet("init", flag.ContinueOnError)
 		flags.SetOutput(output)

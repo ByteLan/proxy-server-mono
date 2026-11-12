@@ -1,6 +1,17 @@
 # 部署
 
-## 先构建，后安装
+## 直接下载并初始化
+
+推荐在目标 Linux 主机运行独立 `install.sh`。它从指定 GitHub release 下载所选 Go 程序、`install-bundle.tar.gz` 和 `SHA256SUMS`，校验后调用 bundle 内的安装脚本完成 systemd 与配置初始化；目标机无需源码目录或 Go/Node 编译环境。完整的私库首次脚本下载和 manager/node 示例见[发布与更新](releases.md#首次下载并初始化)。
+
+```bash
+sudo --preserve-env=GITHUB_TOKEN bash ./install.sh manager -- \
+  --public-url https://manager.example.com
+```
+
+GitHub token 仅用于下载：使用单仓库 Contents 只读权限，经环境变量或 `--token-file`（0600）提供，不放入服务环境文件。默认 main 渠道；指定正式版本用 `manager --channel stable -- ...`，指定发布用 `manager --version TAG -- ...`。`--` 后是下文既有安装脚本的参数，`--binary` 由 bootstrap 自动提供。节点模式用 `node`，仍需准备固定版本核心的路径、预期 hash 和版本；bootstrap 不自动更新核心。
+
+## 自行构建后安装
 
 在开发机或 CI 构建，避免在 1 GiB 服务器运行 npm 和完整编译链。目标容量尚未在 1 CPU / 1 GiB VPS 上实测。
 
@@ -9,7 +20,7 @@ npm --prefix web ci
 GOTOOLCHAIN=auto GOOS=linux GOARCH=amd64 make build
 ```
 
-ARM64 改为 `GOARCH=arm64`。将目标二进制、`scripts/` 和 `deploy/` 复制到目标 Linux 主机，保持 `scripts/../deploy/systemd` 的相对位置。脚本使用 systemd、`useradd`、`install` 和 OpenSSL；选用 Debian/Ubuntu 等提供这些工具的发行版。安装脚本不负责 SSH、云防火墙或自动下载核心。
+ARM64 改为 `GOARCH=arm64`，ARMv7 使用 `GOARCH=arm GOARM=7`。自行构建路径下，将目标二进制、`scripts/` 和 `deploy/` 复制到目标 Linux 主机，保持 `scripts/../deploy/systemd` 的相对位置；使用上面的独立 bootstrap 时无需复制这些目录。安装脚本使用 systemd、`useradd`、`install` 和 OpenSSL；选用 Debian/Ubuntu 等提供这些工具的发行版。脚本不负责 SSH、云防火墙或自动下载核心。
 
 ## 管理端
 
@@ -58,6 +69,8 @@ manager.example.com {
 
 安装脚本再次执行会更新二进制、保留已有 `manager.env` 并重启；`--public-url` / `--listen` 不会覆盖旧文件。修改配置后使用 `systemctl restart proxy-manage-server`。单独改变加密主密钥会让已有加密数据无法解密，不能当成普通 token 轮换。
 
+仅更新程序时优先使用 `proxy-manage-server update --check` / `update`，避免重新执行安装流程；update 不自动重启。升级前停服备份整个 DATA_DIR 及加密主密钥，操作和 `.previous` 二进制回退见[发布指南](releases.md#升级前备份与二进制回退)。备份程序不等于备份数据库。
+
 ## 代理节点
 
 从各核心的官方 release 选择固定版本和正确 Linux 架构，下载并解包可执行文件，在可信渠道取得对应 SHA256。不要用 `latest`；不要只用对刚下载文件现算的 hash 替代对发布者预期 hash 的验证。Hysteria 与 Xray 版本及客户端版本需要一起做协议连通测试；版本记录不等同于已验证兼容性。
@@ -89,6 +102,8 @@ sudo --preserve-env=ENROLL_TOKEN bash scripts/install-proxy-server.sh \
 脚本校验核心 SHA256 后，将三个程序安装到 `/opt/proxy-server/bin/`，记录版本/hash到 `/opt/proxy-server/core-versions`，初始化 `/etc/proxy-server/config.json` 和 `config.d/`。节点登录 key 保存在 root-only `node.env`，节点注册 token 与私钥存于权限受限的配置目录。systemd 使用 `proxy-node` 用户运行，并仅授予绑定低端口的能力。
 
 已注册的节点不要删除本地 token 后直接复用旧 ID 重新注册。需要全新身份时，先处理中心旧节点，再明确备份和重建配置。升级脚本保留已有配置；仅重跑时传新的 `--manager` / `--server` / `--name` 不会替换旧配置，请先停止服务，再显式编辑 `manager_url` / endpoints / core 配置并核对一致性。
+
+后续只升级 Agent 可运行 `/opt/proxy-server/bin/proxy-server update --check`，确认渠道或版本后以管理员运行 `update`，再手动 `systemctl restart proxy-server`。该路径保留节点身份和所有核心文件；重启 Agent 会重启核心并中断现有连接。不能为了自更新把 `/opt/proxy-server/bin` 改为服务用户可写。
 
 ## 直接运行 Agent
 

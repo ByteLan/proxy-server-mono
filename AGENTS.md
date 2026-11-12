@@ -16,3 +16,11 @@ Canonical skills live in `skills/`; `.agents/skills`, `.claude/skills`, `.codex/
 - [proxy-server-setup](skills/proxy-server-setup/SKILL.md): original protocol deployment reference, with product compatibility notes. Read for Hysteria2/Xray details.
 - [install-proxy-server](skills/install-proxy-server/SKILL.md): build/install/enroll a proxy node.
 - [install-proxy-manage-server](skills/install-proxy-manage-server/SKILL.md): install the SQLite manager and serve the embedded UI/subscriptions.
+
+## Release and update invariants
+
+- GitHub Actions tests/builds Linux amd64, arm64 and ARMv7; `main-<sha12>` prereleases are immutable. Do not replace published assets or move release tags.
+- `internal/selfupdate` changes only a verified server executable, keeps `.previous`, and never updates proxy cores, configuration or SQLite. Service restart remains explicit.
+- Private GitHub read tokens are download credentials, separate from admin/enrollment/node identities. Keep them out of logs, command arguments and long-lived service environments.
+- CI artifact cleanup is scoped to this workflow. Release cleanup is disabled unless repository variables explicitly enable it; formal versions and Git tags are retained.
+- Run Python installer/retention tests via `python3 -m unittest discover -s scripts -p 'test_*.py'` when changing release automation.

@@ -19,3 +19,7 @@
 *.crt
 .env.*
 !.env.example
+/release/
+__pycache__/
+*.previous
+*.update.lock

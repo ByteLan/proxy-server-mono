@@ -1,0 +1,192 @@
+name: Linux build and release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+      commit: ${{ steps.metadata.outputs.commit }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Set up Go from go.mod
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Set up Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install frontend dependencies
+        run: npm --prefix web ci
+      - name: Typecheck and build embedded frontend once
+        run: make web-build
+      - name: Test and vet Go
+        env:
+          GOTOOLCHAIN: local
+        run: |
+          go test -tags stdjson,gjson ./...
+          go vet -tags stdjson,gjson ./...
+          bash -n scripts/*.sh
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts -p 'test_*.py'
+      - name: Determine immutable build version
+        id: metadata
+        run: |
+          commit=$(git rev-parse HEAD)
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version=$GITHUB_REF_NAME
+          else
+            version=main-${commit:0:12}
+          fi
+          printf 'version=%s\ncommit=%s\n' "$version" "$commit" >> "$GITHUB_OUTPUT"
+          printf 'VERSION=%s\nCOMMIT=%s\nBUILD_TIME=%s\n' \
+            "$version" "$commit" "$(git show -s --format=%cI "$commit")" >> "$GITHUB_ENV"
+      - name: Cross-build six Linux release binaries
+        env:
+          GOTOOLCHAIN: local
+        run: bash scripts/build-release.sh --skip-web --output release
+      - name: Smoke-test embedded release metadata without runtime credentials
+        run: |
+          smoke_dir=$(mktemp -d)
+          for product in proxy-server proxy-manage-server; do
+            output=$(ADMIN_TOKEN='' ENROLL_TOKEN='' DATA_DIR="$smoke_dir/data" \
+              "./release/${product}_linux_amd64" version)
+            printf '%s\n' "$output"
+            [[ "$output" == *"$VERSION"* && "$output" == *"$COMMIT"* && "$output" == *"$BUILD_TIME"* ]]
+          done
+          [[ ! -e "$smoke_dir/data" ]]
+      - name: Retain binaries and checksum manifest
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: proxy-linux-${{ github.sha }}
+          path: release/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  publish:
+    needs: build
+    if: >-
+      (github.event_name == 'push' &&
+        (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))) ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download verified build artifacts
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: proxy-linux-${{ github.sha }}
+          path: release
+      - name: Publish complete release, preserving published tags
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.build.outputs.version }}
+          RELEASE_COMMIT: ${{ needs.build.outputs.commit }}
+        run: |
+          cd release
+          sha256sum --check SHA256SUMS
+          [[ $(wc -l < SHA256SUMS) -eq 8 ]]
+          prerelease=false
+          latest=true
+          if [[ "$RELEASE_TAG" == main-* ]]; then
+            prerelease=true
+            latest=false
+            main_head=$(gh api "repos/$GH_REPO/commits/main" --jq '.sha')
+            if [[ "$main_head" != "$RELEASE_COMMIT" ]]; then
+              echo "Skipping superseded main build $RELEASE_COMMIT."
+              exit 0
+            fi
+          fi
+
+          if draft=$(gh release view "$RELEASE_TAG" --json isDraft --jq '.isDraft'); then
+            if [[ "$draft" != true ]]; then
+              echo "Release $RELEASE_TAG is already published; keeping its assets unchanged."
+              exit 0
+            fi
+            echo "Resuming draft $RELEASE_TAG."
+          else
+            printf 'Build of commit %s.\n\nLinux amd64, arm64 and ARMv7 raw binaries; verify downloads against SHA256SUMS.\n' \
+              "$RELEASE_COMMIT" > "$RUNNER_TEMP/release-notes.md"
+            gh release create "$RELEASE_TAG" --target "$RELEASE_COMMIT" \
+              --title "$RELEASE_TAG" --notes-file "$RUNNER_TEMP/release-notes.md" \
+              --draft --prerelease="$prerelease" --latest=false
+          fi
+
+          # --clobber is restricted to drafts; interrupted uploads can be retried.
+          gh release upload "$RELEASE_TAG" ./proxy-server_linux_* \
+            ./proxy-manage-server_linux_* ./install-bundle.tar.gz ./install.sh ./SHA256SUMS --clobber
+          expected=$(printf '%s\n' SHA256SUMS install-bundle.tar.gz install.sh \
+            proxy-server_linux_amd64 proxy-server_linux_arm64 proxy-server_linux_armv7 \
+            proxy-manage-server_linux_amd64 proxy-manage-server_linux_arm64 proxy-manage-server_linux_armv7 | sort)
+          actual=$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' | sort)
+          [[ "$actual" == "$expected" ]] || { echo 'Draft asset set is incomplete or unexpected.' >&2; exit 1; }
+          if [[ "$prerelease" == true ]]; then
+            main_head=$(gh api "repos/$GH_REPO/commits/main" --jq '.sha')
+            if [[ "$main_head" != "$RELEASE_COMMIT" ]]; then
+              echo 'Main advanced during upload; leaving this draft unpublished.'
+              exit 0
+            fi
+          fi
+          gh release edit "$RELEASE_TAG" --draft=false --prerelease="$prerelease" --latest="$latest"
+
+  cleanup:
+    needs: [build, publish]
+    if: >-
+      always() && needs.build.result == 'success' &&
+      ((github.event_name == 'push' &&
+        (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))) ||
+       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    concurrency:
+      group: proxy-linux-artifact-cleanup
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      - name: Check out cleanup script
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Keep recent workflow artifacts, preserving current and active runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/cleanup-artifacts.py --keep 3
+      - name: Apply opt-in main prerelease retention
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEEP_MAIN_RELEASES: ${{ vars.KEEP_MAIN_RELEASES || '0' }}
+          MAX_MAIN_RELEASE_MIB: ${{ vars.MAX_MAIN_RELEASE_MIB || '0' }}
+          PROTECT_TAG: ${{ needs.build.outputs.version }}
+        run: |
+          python3 scripts/cleanup-releases.py \
+            --keep "$KEEP_MAIN_RELEASES" --max-mib "$MAX_MAIN_RELEASE_MIB" --protect-tag "$PROTECT_TAG"

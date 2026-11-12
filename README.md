@@ -8,6 +8,30 @@
 
 目标是让管理端运行在 Linux 1 核 / 1 GiB 机器上，前端和 Go 程序在开发机或 CI 编译；**尚未在该规格服务器上做资源、容量或长期稳定性实测**。
 
+## 下载、安装与更新
+
+目标机可直接运行独立安装脚本，从 GitHub Releases 下载并校验程序及安装文件，再完成 systemd 配置和初始化；无需克隆源码、安装 Go/Node 或在目标机编译。安装阶段需要 Python 3、OpenSSL 和 systemd 工具；首次下载脚本使用 curl。私有仓库需要仅该仓库 **Contents: Read-only** 的 fine-grained PAT。
+
+首次安全下载脚本及管理端、节点的完整命令见[发布与更新](docs/releases.md#首次下载并初始化)。已经获得 `install.sh` 后：
+
+```bash
+sudo --preserve-env=GITHUB_TOKEN bash ./install.sh manager -- \
+  --public-url https://manager.example.com
+```
+
+默认使用 `ByteLan/proxy-server-mono` 最新已发布的 `main-<sha12>` 预发布；`--channel stable` 选择正式 release，`--version TAG` 固定版本。节点安装还需提供固定版本 Hysteria2 / Xray 的二进制、可信 SHA256 和版本信息，不会自动下载最新协议核心。
+
+已有程序支持手动检查和更新：
+
+```bash
+/opt/proxy-server/bin/proxy-server version
+/opt/proxy-server/bin/proxy-server update --check
+sudo /opt/proxy-server/bin/proxy-server update
+sudo systemctl restart proxy-server
+```
+
+私库更新添加 `--token-file /private/path/github-token`（0600），或向管理员执行的进程安全提供 `GITHUB_TOKEN` / `GH_TOKEN`。管理端使用相应的 `/opt/proxy-manage-server/bin/proxy-manage-server` 和 unit 名。更新不自动重启、不修改配置/数据库/核心；旧程序保存为 `.previous`，数据库须独立备份。[渠道、凭据及回退步骤](docs/releases.md)。
+
 ## 构建
 
 需要 Go 1.25+（版本见 `go.mod`）、Node.js 20+ 和 npm。首次安装前端依赖，然后构建两个二进制：
@@ -39,7 +63,7 @@ export PUBLIC_URL=http://127.0.0.1:8080
 
 ## 部署与节点接入
 
-详细步骤见 [部署指南](docs/deployment.md)，系统结构见 [架构说明](docs/architecture.md)，字段及认证方式见 [API 契约](docs/api.md)，验证范围与资源抽样见 [验证记录](docs/verification.md)。
+详细步骤见 [部署指南](docs/deployment.md)，二进制下载/更新见 [发布指南](docs/releases.md)，系统结构见 [架构说明](docs/architecture.md)，字段及认证方式见 [API 契约](docs/api.md)，验证范围与资源抽样见 [验证记录](docs/verification.md)。
 
 节点配置里的 `manager_url` 可以使用管理端的域名或 IP：`https://manager.example.com` / `https://203.0.113.10:8443`。IP 连接也必须通过证书校验，使用包含该 IP SAN 的证书；私有 CA 可用 `--ca-file` 导入。登录 key 是 `ENROLL_TOKEN`，首次注册换取节点自己的 token，后续心跳不再使用共享 enrollment key。
 

@@ -25,9 +25,10 @@ import (
 	"time"
 
 	"proxy-mono/internal/model"
+	"proxy-mono/internal/version"
 )
 
-const Version = "0.1.0"
+var Version = version.Version
 
 type Command struct {
 	Name string   `json:"name"`

@@ -30,3 +30,12 @@ SQLite 使用 modernc.org/sqlite v1.46.2（SQLite 3.51.3），单数据库连接
 ## 尚未完成的环境验证
 
 未在真实 Linux systemd 主机安装运行，也未做 1 核 / 1 GiB 的长时间压力、流量吞吐或公网跨地域测试。实际上线前需要固定协议核心与客户端版本，逐协议验证真实数据流、证书、UDP/TCP 防火墙和网络可达性。管理端不运行协议核心。
+
+## 2026-11-12：CI、Release 安装与更新
+
+- Ubuntu GitHub Actions workflow 通过 actionlint；所有 shell 安装/构建脚本通过 bash 语法检查。
+- Go 1.25.9 和 1.27.3 下，两种服务均已交叉编译 Linux amd64、arm64、ARMv7 静态产物。manifest 覆盖六个程序及两个安装资产；tar bundle 严格包含四个普通文件。
+- Go 更新器的竞态测试通过，覆盖私库鉴权、重定向认证隔离、main/stable/指定 tag、校验失败保留原程序、ELF 架构校验、并发锁、原子替换与 .previous 备份。
+- Bootstrap 使用本地 GitHub HTTP fixture，通过管理端/节点 DESTDIR 安装检查、token 保密、跨域认证剥离、错误 SHA/ELF/tar 拒绝以及参数透传测试；没有安装本机 systemd 服务。
+- Artifact/Release 保留策略使用模拟数据测试删除选择、当前运行和正式版本保护。未在本地调用任何真实 GitHub 删除接口。
+- CI 发布过程通过模拟 gh 验证 draft 恢复、已发布版本不覆盖、旧 main 跳过、上传失败不发布。真实 GitHub Actions 的账户额度、仓库设置与运行结果仍以仓库 Actions 页面为准。
