@@ -1,4 +1,4 @@
-// Package version holds release metadata injected by the build pipeline.
+// Package version holds release metadata injected by an explicit build command.
 package version
 
 import "fmt"

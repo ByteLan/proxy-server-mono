@@ -32,7 +32,14 @@ build_time=${BUILD_TIME:-$(git show -s --format=%cI "$commit")}
 [[ "$version" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ ]] || { echo 'VERSION must contain only letters, numbers, dot, dash, underscore or plus.' >&2; exit 2; }
 [[ "$commit" =~ ^[0-9a-fA-F]{40}$ ]] || { echo 'COMMIT must be a full 40-character Git commit.' >&2; exit 2; }
 [[ "$build_time" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(Z|[+-][0-9]{2}:[0-9]{2})$ ]] || { echo 'BUILD_TIME must be RFC3339 without fractional seconds.' >&2; exit 2; }
-command -v sha256sum >/dev/null || { echo 'sha256sum is required.' >&2; exit 2; }
+if command -v sha256sum >/dev/null 2>&1; then
+  checksum=(sha256sum)
+elif command -v shasum >/dev/null 2>&1; then
+  checksum=(shasum -a 256)
+else
+  echo 'sha256sum or shasum is required.' >&2
+  exit 2
+fi
 [[ -f scripts/install.sh ]] || { echo 'scripts/install.sh is required for release bootstrap assets.' >&2; exit 2; }
 
 if [[ "$skip_web" == false ]]; then
@@ -72,8 +79,8 @@ chmod 0755 "$temporary/install.sh"
 assets+=(install-bundle.tar.gz install.sh)
 (
   cd "$temporary"
-  sha256sum "${assets[@]}" > SHA256SUMS
-  sha256sum --check SHA256SUMS
+  "${checksum[@]}" "${assets[@]}" > SHA256SUMS
+  "${checksum[@]}" --check SHA256SUMS
 )
 for asset in "${assets[@]}" SHA256SUMS; do
   mv -f -- "$temporary/$asset" "$output/$asset"

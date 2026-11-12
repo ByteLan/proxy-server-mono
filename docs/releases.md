@@ -1,6 +1,6 @@
 # 发布与更新
 
-两个服务从 GitHub Releases 下载各自的程序。管理端仍只提供管理 API、SQLite 和嵌入前端；节点更新只更新 Agent，不会下载、升级或重新配置 Hysteria2 / Xray。
+**推荐：在开发机编译并手动发布，VPS 只下载已编译程序。** 两个服务保留从 GitHub Releases 下载程序的安装与更新命令。维护者需先在本地构建并手动上传完整发布资产；仓库没有 push/tag 触发的构建发布或定时清理流程；只有显式执行本地发布命令才会上传可下载二进制。管理端仍只提供管理 API、SQLite 和嵌入前端；节点更新只更新 Agent，不会下载、升级或重新配置 Hysteria2 / Xray。
 
 ## 发布渠道与资产
 
@@ -8,10 +8,10 @@
 
 | 来源 | 发布方式 | 使用场景 |
 |---|---|---|
-| `main` 分支 push | CI 检查通过后发布 `main-<12位commit SHA>` prerelease | 跟进主分支通过检查的构建 |
-| `v*` tag | CI 检查通过后发布同名正式 release | 使用指定稳定版本 |
+| 维护者选定的主分支 commit | 本地构建后手动发布 `main-<12位commit SHA>` prerelease | 使用维护者发布的主分支快照 |
+| 维护者选定的 `v*` tag | 本地构建后手动发布同名正式 release | 使用指定稳定版本 |
 
-每个发布 tag 对应固定 commit 和完整资产集，不移动 tag、不覆盖已发布资产。`main` 是更新渠道，不是反复覆盖的 release tag。主分支 CI 尚未通过或尚未发布时，更新命令只能找到此前已发布的构建；代码已 push 不代表二进制已发布。GitHub 的 `latest` 正式 release 不包含 main 预发布，不能用它代替 main 渠道。
+每个发布 tag 对应固定 commit 和完整资产集，不移动 tag、不覆盖已发布资产。`main` 是更新渠道，不是反复覆盖的 release tag。维护者未发布新构建时，更新命令只能找到此前已发布的产物；`main` 渠道不会自动跟随 Git 分支。GitHub 的 `latest` 正式 release 不包含 main 预发布，不能用它代替 main 渠道。
 
 每次发布包含六个原始 Linux 可执行文件、独立 `install.sh`、`install-bundle.tar.gz` 和 `SHA256SUMS`。manifest 覆盖六个程序、bundle 与 bootstrap：
 
@@ -60,13 +60,13 @@ sudo /opt/proxy-server/bin/proxy-server update --version v0.1.0 --check
 sudo /opt/proxy-server/bin/proxy-server update --version v0.1.0
 ```
 
-`--check` 只检查候选发布，不替换文件。更新先下载同一 release 的程序与 `SHA256SUMS`，校验 SHA256 后在目标目录准备新文件，再进行原子替换，并将旧程序保留为 `<target>.previous`。下载、权限或校验失败不会用不完整程序覆盖当前程序。SHA256 校验防止损坏或资产不匹配；它不代替对发布仓库及其 CI 权限的信任。
+`--check` 只检查候选发布，不替换文件。更新先下载同一 release 的程序与 `SHA256SUMS`，校验 SHA256 后在目标目录准备新文件，再进行原子替换，并将旧程序保留为 `<target>.previous`。下载、权限或校验失败不会用不完整程序覆盖当前程序。SHA256 校验防止损坏或资产不匹配；它不代替对发布仓库、构建来源及维护者权限的信任。
 
 **更新不自动重启服务。** 正在运行的进程会继续使用旧程序，直到管理员执行相应 `systemctl restart`。节点 Agent 重启也会停止并重新启动它管理的协议核心，现有代理连接可能中断；选择合适的维护时段。配置、节点身份、数据库和协议核心不会被更新命令修改。
 
 ## 私有仓库的凭据
 
-为 `ByteLan/proxy-server-mono` 单独创建 fine-grained PAT：只选择这个仓库，授予 **Contents: Read-only**。不需要 Actions、管理权限或写权限。组织仓库若要求审批或 SSO，先完成相应授权；无访问权限有时表现为 404，不能据此认定仓库或 release 不存在。
+为 `ByteLan/proxy-server-mono` 单独创建 fine-grained PAT：只选择这个仓库，授予 **Contents: Read-only**。不需要仓库管理权限或写权限。组织仓库若要求审批或 SSO，先完成相应授权；无访问权限有时表现为 404，不能据此认定仓库或 release 不存在。
 
 更新命令支持 `GITHUB_TOKEN`、`GH_TOKEN` 环境变量，或 `--token-file PATH`。token 文件只包含 token 文本，并设置为 `0600`。优先使用管理员可读的临时文件或 root 私有路径，升级结束后按自己的凭据保管方式清理；不要把 token 传作命令行参数、写进 shell history、公开日志、Git 或长期的 systemd `EnvironmentFile`。
 
@@ -203,23 +203,69 @@ sudo systemctl start proxy-server
 
 管理端使用 `/opt/proxy-manage-server/bin/proxy-manage-server.previous` 和 `proxy-manage-server` unit。这里的恢复只回退二进制，**不会回退 SQLite 数据或已经执行的数据迁移**；不要把 `.previous` 描述为数据库回滚。若新旧版本的数据格式不兼容，应在停服状态下按版本说明恢复升级前一致性备份及同一主密钥，不能只替换程序后继续尝试。
 
-## 维护 CI
+## 维护者手动构建与发布
 
-检查与构建在 GitHub runner 完成，1 GiB 目标机只下载和替换程序。CI 需要测试 Go、检查前端并构建嵌入 UI，然后交叉编译全部发布目标并生成 `SHA256SUMS`。发布 job 使用仓库 `contents: write`；清理 job 为临时产物使用 `actions: write`，启用 Release 清理时也使用 `contents: write`。下载方的 PAT 保持只读。PR 不需要发布凭据，也不发布 release。
+推荐在开发机执行本地发布命令，避免让 1 GiB VPS 安装编译链和编译两个服务。开发机需要仓库要求的 Go、Node/npm、Python3、`sha256sum`，实际上传还需要 GitHub CLI `gh`。目标 VPS 不需要这些编译工具；安装阶段仍按上文准备 Python3、OpenSSL、systemd 和 curl。
 
-主分支工作流应避免旧 commit 的慢构建晚于新 commit 发布后成为渠道候选；固定 commit tag 和发布前核对主分支 HEAD 用于保持来源清楚。重跑已发布版本时不覆盖资产。如果失败留下未发布 draft，先检查 draft 与资产是否完整再处理，不能上传一半就供更新命令选择。仓库应限制 main 与发布 tag 的写权限；删除或改写历史 release 会影响指定版本的可获取性。
+### 默认发布主分支快照
 
-## 临时 CI 产物与 Release 历史
+先自行完成代码提交与 push，并确认工作树干净。脚本检查当前 commit 已在所选远端仓库；未 push 时拒绝发布，不自动 commit 或 push。开发机安装前端依赖、运行检查并登录 GitHub 后，显式执行：
 
-Actions Artifacts 是工作流构建与发布 job 之间的临时传输，配置为 **1 天过期、仅保留本工作流最近 3 组 `proxy-linux-*` 产物**；清理只作用于这些临时 artifacts，不删除 Release。并发运行时可能短暂多于 3 组。GitHub Free 的 500 MB Actions artifact 存储额度属于这类临时存储，不是 Release 附件总量额度。
+```bash
+npm --prefix web ci
+GOTOOLCHAIN=auto make test check
+gh auth login
+GOTOOLCHAIN=auto make publish
+```
 
-GitHub Release 附件独立保留历史，供首次安装、固定版本与回退下载；不会因为临时 artifact 过期而失效。GitHub 当前每个 Release 最多 1000 个附件、每个文件必须小于 2 GiB，未设 Release 总体大小或带宽的额外上限；实际可用性仍取决于仓库访问权限及平台政策。[GitHub Releases 官方说明](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases)。
+`make publish` 调用 `scripts/publish-release.sh`：在本地编译三种 Linux 架构的六个 Go 程序及嵌入前端，打包安装文件，校验 `SHA256SUMS`，然后创建 draft、上传完整九个文件并发布。默认 tag 为当前 commit 的 `main-<sha12>`，标记为 prerelease；现有 VPS 的 `update` 默认 main 渠道可选择该发布。它不是分支 push 触发的流程，不需要 GitHub Actions。构建后会再次检查工作树；若前端重建改变了已跟踪资源，应先检查并提交、push 后再发布，不能用未提交资源替代已记录的 commit。
 
-Release 清理默认关闭。需要限制 main 构建历史时，在仓库 Actions Variables 配置以下一个或两个变量；它们是自己的保留策略，不是 GitHub 收费阈值：
+已发布的同名 tag 保持原资产不变，脚本跳过重复发布；要发布新代码，应先提交并 push 新 commit。未完成的同名 draft 可恢复上传；上传失败时不要把 draft 当作可用发布，修复后按脚本提示重试。只有 GitHub 实际完成发布且资产齐全，才可以报告 Release 可供下载；本地构建成功或 gh 已登录都不能证明上传成功。账户或 API 限制仍可能导致真实上传失败。
 
-| 仓库变量 | 默认值 | 用途 |
-|---|---|---|
-| `KEEP_MAIN_RELEASES` | `0` | 设置为至少 `2` 时限制保留的 main 预发布数量；不接受 `1` |
-| `MAX_MAIN_RELEASE_MIB` | `0` | 大于零时为 main 预发布附件设置 MiB 预算，达到预算 90% 时开始清理旧版本 |
+### 正式版本与参数
 
-清理只针对 `main-<sha12>` 预发布，始终保护最近至少两个 main release 和本次发布 tag；正式 `v*` release 与 Git tags 不删除。因此预算不是保证可达到的硬上限，被保护版本自身较大时仍可能超出。历史 release 被清理后，即使相应 Git tag 还在，`--version` 也不能再下载它的附件；需要长期保留的版本应发布为正式 `v*` release 或自行归档。
+使用同一个入口发布正式版本：
+
+```bash
+GOTOOLCHAIN=auto bash scripts/publish-release.sh --tag v0.1.0
+```
+
+示例版本号应换成实际准备发布的版本。`v*` tag 发布为正式 release，与 VPS 的 `--channel stable` 对应；主分支快照默认使用 `main-<sha12>` 预发布。若远端已有 tag，脚本核对它指向当前 commit；远端无 tag 时，创建 Release 会以当前完整 commit SHA 为 target 创建远端 tag。脚本不创建或移动本地 tag，也不自动 push。
+
+```text
+scripts/publish-release.sh [--tag TAG] [--repo owner/repo]
+                          [--skip-web] [--output DIRECTORY] [--dry-run]
+```
+
+- `--repo` 选择发布仓库，默认 `ByteLan/proxy-server-mono`；VPS 下载其他仓库时也需对应设置 `--repo`。
+- `--skip-web` 复用已提交的 `internal/webui/dist`，只重新编译 Go，不需要现场运行 npm。它不能代替确认嵌入前端与当前代码一致。
+- `--output` 指定本地产物目录，默认 `bin/releases/`；使用 Git 忽略的目录或仓库外路径，避免产物污染工作树。
+- `--dry-run` 只本地构建与校验，不上传、不要求 gh 登录，不验证实际发布权限；不能把 dry-run 通过报告为已发布。
+
+例如先检查已有前端产物的 Go 打包路径：
+
+```bash
+GOTOOLCHAIN=auto bash scripts/publish-release.sh --skip-web --dry-run
+```
+
+开发机的发布登录需要所选仓库的写权限。私有仓库可使用拥有相应仓库访问权的 classic PAT（`repo`）或仅选择该仓库、授予 **Contents: Read and write** 的 fine-grained PAT，通过 `gh auth login` 或安全环境变量提供。VPS 只需要 **Contents: Read-only** 的另一份下载凭据，不能把发布 token 放入目标服务的环境文件。脚本不需要也不接收明文 token 参数。
+
+### 只构建，不上传
+
+保留原有本地打包入口：
+
+```bash
+GOTOOLCHAIN=auto make release
+# 已有经过检查的嵌入前端时
+GOTOOLCHAIN=auto bash scripts/build-release.sh --skip-web
+# 只构建指定版本名的产物，不发布
+VERSION=v0.1.0 GOTOOLCHAIN=auto make release
+```
+
+`make release` 只调用本地 `scripts/build-release.sh`，默认在 `bin/releases/` 写入六个 Linux 程序、`install.sh`、`install-bundle.tar.gz` 和 `SHA256SUMS`。默认版本名为当前 commit 的 `main-<sha12>`，版本、commit 和构建时间写入程序；它不上传、不创建 release。普通构建会重建前端，开发机需先安装 npm 依赖；`--skip-web` 必须已有 `internal/webui/dist/index.html`。
+
+发布前检查构建源码 commit、程序中的版本信息、所有资产与清单一致。在产物目录运行 `sha256sum --check SHA256SUMS`，核对八项全部通过；归档应只有两个安装脚本和两个 systemd unit。交叉编译通过不代表目标硬件、协议或 1 GiB 容量已实测。
+
+也可通过 GitHub Releases 页面手动创建 draft，选择准确 commit/tag，上传同一组完整九个文件后发布。已发布 tag 和资产保持不变；修复发布内容时创建新版本，不覆盖旧资产或移动 tag。更新器与安装器不会选择 draft；未发布、缺资产或无权限时会报错，不回退到源码编译。历史 Release 由维护者手动管理，删除附件后对应版本无法继续通过 `--version` 下载。
+
+当前 `update` 只下载和替换已发布程序，不实现 Git 拉取、源码编译或服务进程自行重建；源码构建评估见[源码构建说明](source-build.md)。

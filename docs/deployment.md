@@ -1,19 +1,23 @@
 # 部署
 
+推荐在开发机编译，再手动发布 GitHub Release，最后由 VPS 下载；目标机不需要 Go/Node 编译环境。开发机先自行提交并 push 当前 commit、保持工作树干净，再用 `GOTOOLCHAIN=auto make publish`。发布需要 gh 已登录且对仓库有写权限；`--dry-run` 只本地构建和校验，不需要 gh 登录。完整发布参数与凭据边界见[发布指南](releases.md#维护者手动构建与发布)。
+
 ## 直接下载并初始化
 
-推荐在目标 Linux 主机运行独立 `install.sh`。它从指定 GitHub release 下载所选 Go 程序、`install-bundle.tar.gz` 和 `SHA256SUMS`，校验后调用 bundle 内的安装脚本完成 systemd 与配置初始化；目标机无需源码目录或 Go/Node 编译环境。完整的私库首次脚本下载和 manager/node 示例见[发布与更新](releases.md#首次下载并初始化)。
+维护者已手动发布完整 Release 时，可在目标 Linux 主机运行独立 `install.sh`。它从指定 GitHub release 下载所选 Go 程序、`install-bundle.tar.gz` 和 `SHA256SUMS`，校验后调用 bundle 内的安装脚本完成 systemd 与配置初始化；目标机无需源码目录或 Go/Node 编译环境。完整的私库首次脚本下载和 manager/node 示例见[发布与更新](releases.md#首次下载并初始化)。
 
 ```bash
 sudo --preserve-env=GITHUB_TOKEN bash ./install.sh manager -- \
   --public-url https://manager.example.com
 ```
 
+仓库没有 push 或 tag 触发的构建发布；未手动上传目标架构程序、安装 bundle 和校验清单时，这条下载路径不可用。可以改用下文的本地手动构建与安装流程。
+
 GitHub token 仅用于下载：使用单仓库 Contents 只读权限，经环境变量或 `--token-file`（0600）提供，不放入服务环境文件。默认 main 渠道；指定正式版本用 `manager --channel stable -- ...`，指定发布用 `manager --version TAG -- ...`。`--` 后是下文既有安装脚本的参数，`--binary` 由 bootstrap 自动提供。节点模式用 `node`，仍需准备固定版本核心的路径、预期 hash 和版本；bootstrap 不自动更新核心。
 
-## 自行构建后安装
+## 本地手动构建后安装
 
-在开发机或 CI 构建，避免在 1 GiB 服务器运行 npm 和完整编译链。目标容量尚未在 1 CPU / 1 GiB VPS 上实测。
+由维护者在开发机手动构建，避免在 1 GiB 服务器运行 npm 和完整编译链。目标容量尚未在 1 CPU / 1 GiB VPS 上实测。
 
 ```bash
 npm --prefix web ci
@@ -103,7 +107,7 @@ sudo --preserve-env=ENROLL_TOKEN bash scripts/install-proxy-server.sh \
 
 已注册的节点不要删除本地 token 后直接复用旧 ID 重新注册。需要全新身份时，先处理中心旧节点，再明确备份和重建配置。升级脚本保留已有配置；仅重跑时传新的 `--manager` / `--server` / `--name` 不会替换旧配置，请先停止服务，再显式编辑 `manager_url` / endpoints / core 配置并核对一致性。
 
-后续只升级 Agent 可运行 `/opt/proxy-server/bin/proxy-server update --check`，确认渠道或版本后以管理员运行 `update`，再手动 `systemctl restart proxy-server`。该路径保留节点身份和所有核心文件；重启 Agent 会重启核心并中断现有连接。不能为了自更新把 `/opt/proxy-server/bin` 改为服务用户可写。
+当前更新命令只下载维护者已上传的 Release 二进制，不拉取源码或调用 Go 编译器。后续只升级 Agent 可运行 `/opt/proxy-server/bin/proxy-server update --check`，确认渠道或版本后以管理员运行 `update`，再手动 `systemctl restart proxy-server`。该路径保留节点身份和所有核心文件；重启 Agent 会重启核心并中断现有连接。不能为了自更新把 `/opt/proxy-server/bin` 改为服务用户可写。
 
 ## 直接运行 Agent
 

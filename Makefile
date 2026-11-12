@@ -1,6 +1,9 @@
-.PHONY: build web-build release test check clean
+.PHONY: build build-go web-build release publish test check clean
 
 build: web-build
+	$(MAKE) build-go
+
+build-go:
 	mkdir -p bin
 	CGO_ENABLED=0 go build -tags stdjson,gjson -trimpath -o bin/proxy-server ./cmd/proxy-server
 	CGO_ENABLED=0 go build -tags stdjson,gjson -trimpath -o bin/proxy-manage-server ./cmd/proxy-manage-server
@@ -13,6 +16,9 @@ web-build:
 
 release:
 	bash scripts/build-release.sh
+
+publish:
+	bash scripts/publish-release.sh
 
 test:
 	go test -tags stdjson,gjson ./...

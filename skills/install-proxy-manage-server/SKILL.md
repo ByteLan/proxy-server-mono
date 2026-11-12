@@ -7,7 +7,11 @@ description: 从 GitHub Release 下载、初始化或手动更新本仓库 Go/He
 
 先读仓库 [AGENTS.md](../../AGENTS.md) 和 [部署指南](../../docs/deployment.md)。首次下载、私库认证及版本选择按[发布指南](../../docs/releases.md)执行；源码根目录是本文件所在目录的上两级。
 
-管理端只提供控制面、SQLite 和嵌入的 React/Arco UI；不要在管理端安装代理核心或打开代理监听。目标是 Linux systemd 主机，1 核 / 1 GiB 尚未实测，构建在开发机/CI 完成。
+推荐开发机编译并手动发布 Release，VPS 只下载已编译程序，无需 Go/Node 编译环境。发布者在工作树干净、当前 commit 已自行 push 后运行 `GOTOOLCHAIN=auto make publish`（默认 main-sha 预发布）；正式版本用 `bash scripts/publish-release.sh --tag vX.Y.Z`，只本地检查用 `--dry-run`，具体参数见发布指南。实际发布需要 gh 登录和仓库写权限；dry-run 不需要登录也不证明已发布。发布凭据与 VPS Contents 只读下载 token 分开保管。
+
+仓库没有分支 push 自动构建或发布；发布脚本不自动 commit/push，也不覆盖已发布 tag。Release 安装与 update 依赖维护者已上传完整资产；没有对应发布时使用本地手动构建安装流程，不把 update 描述为已支持拉取源码编译。
+
+管理端只提供控制面、SQLite 和嵌入的 React/Arco UI；不要在管理端安装代理核心或打开代理监听。目标是 Linux systemd 主机，1 核 / 1 GiB 尚未实测，构建由维护者在开发机手动完成。
 
 1. 确认目标架构、已有安装、对外 HTTPS 地址与本机监听地址。检查已有 `/etc/proxy-manage-server/manager.env` 和 DATA_DIR，升级时保留凭据与数据库。
 2. 优先按发布指南经 GitHub Contents API 获取独立 `install.sh`，在目标机以管理员运行 `bash install.sh manager [渠道/版本选项] -- --public-url URL [TLS参数]`。它验证发布程序与四文件 bundle 后完成初始化，无需源码、Go/Node、gh 或复制 scripts/deploy。安装阶段需要 Python3、OpenSSL、systemd 工具，首次获取脚本需要 curl。私库使用单仓库 Contents 只读 PAT，经 GITHUB_TOKEN / GH_TOKEN 或 `--token-file`（普通文件、0600）提供；不把 token 放到参数、回复、日志或 service env。下载时的 Authorization 不转发到跨域存储。
