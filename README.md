@@ -1,80 +1,188 @@
 # Proxy monorepo
 
-集中管理多个代理节点，并通过固定订阅链接生成随节点选择变化的 mihomo / Clash Meta YAML。
+集中管理多个海外代理节点，并通过固定订阅链接动态生成 mihomo / Clash Meta YAML 配置（内置国内 DoH 分流、全局模式对齐规则节点，以及 Claude / ChatGPT / Google 专属纯净节点自动测速与禁直连保护）。
 
 - `proxy-server`：Go 节点 Agent，管理独立 Hysteria2 / Xray 子进程、首次注册和定期心跳。
-- `proxy-manage-server`：Go / Hertz 控制面，SQLite 保存节点与订阅，嵌入 React / Arco Design 前端；不运行代理核心、不转发代理流量。
-- `web`：React / TypeScript / Vite / Arco Design 管理界面。
+- `proxy-manage-server`：Go / Hertz 控制面，SQLite 保存节点与订阅，通过 `go:embed` 内置编译后的 React / Arco Design 前端；不运行代理核心、不转发代理流量。
+- `web`：React / TypeScript / Vite / Arco Design 管理界面源码。
 
-**推荐流程：开发机编译 → 手动发布 GitHub Release → VPS 下载已编译程序。** 目标机无需 Go、Node 或现场编译。
+**核心交付闭环：开发机编译前后端 → 脚本一键发布 GitHub Release → Server 端（Manager / Node）直接下载已编译二进制安装或更新（服务端零编译，更新管理端即同时更新前后端）。**
 
-目标是让管理端运行在 Linux 1 核 / 1 GiB 机器上，前端和 Go 程序由维护者在开发机手动编译；**尚未在该规格服务器上做资源、容量或长期稳定性实测**。
+目标是让管理端运行在 Linux 1 核 / 1 GiB 机器上，前端和 Go 程序由维护者在开发机手动编译；**尚未在该规格服务器上做资源、容量或长期稳定性实测**。仓库不配置 GitHub Actions 自动构建或自动发布，所有 Release 均由维护者在本地显式发布。
 
-## 下载、安装与更新
+---
 
-维护者手动构建并上传 GitHub Release 后，目标机可运行独立安装脚本，下载并校验程序及安装文件，再完成 systemd 配置和初始化；无需克隆源码、安装 Go/Node 或在目标机编译。仓库没有 push 或 tag 触发的构建发布；必须显式执行本地发布命令才能上传可下载程序。安装阶段需要 Python 3、OpenSSL 和 systemd 工具；首次下载脚本使用 curl。私有仓库需要仅该仓库 **Contents: Read-only** 的 fine-grained PAT。
+## 本地开发与发布 GitHub Release
 
-首次安全下载脚本及管理端、节点的完整命令见[发布与更新](docs/releases.md#首次下载并初始化)。已经获得 `install.sh` 后：
+### 1. 本地前置条件
 
-```bash
-sudo --preserve-env=GITHUB_TOKEN bash ./install.sh manager -- \
-  --public-url https://manager.example.com
-```
+开发机发布 Release 需要以下环境与条件（目标 VPS **不需要**这些编译工具）：
 
-默认使用 `ByteLan/proxy-server-mono` 中维护者手动发布的最新 `main-<sha12>` 预发布；未发布对应资产时安装与更新会失败，不会在服务器上临时编译。`--channel stable` 选择正式 release，`--version TAG` 固定版本。节点安装还需提供固定版本 Hysteria2 / Xray 的二进制、可信 SHA256 和版本信息，不会自动下载最新协议核心。
+- **基础工具链**：`git`、Go `1.25+`（见 `go.mod`）、Node.js `20+` 与 `npm`、`python3`、`sha256sum`（或 macOS 自带的 `shasum`）、GitHub CLI `gh`。
+- **GitHub 写权限登录**：已执行 `gh auth login`。若为私有仓库，登录凭据需具备目标仓库 **Contents: Read and write** 权限（切勿与 VPS 上的只读下载 Token 混用）。
+- **干净且已推送的 Git 状态**（`scripts/publish-release.sh` 会强制校验）：
+  1. 前端静态产物已同步至 `internal/webui/dist` 并提交，工作区无任何未提交修改或未跟踪文件（`git status` 完全干净）。
+  2. 当前本地 `HEAD` commit 已经 `git push` 到远端 GitHub（默认发布 `main-<12位SHA>` 预发布时，要求本地 `HEAD` 与远端 `main` 分支最新提交一致）。
 
-已有程序支持手动检查和更新：
-
-```bash
-/opt/proxy-server/bin/proxy-server version
-/opt/proxy-server/bin/proxy-server update --check
-sudo /opt/proxy-server/bin/proxy-server update
-sudo systemctl restart proxy-server
-```
-
-私库更新添加 `--token-file /private/path/github-token`（0600），或向管理员执行的进程安全提供 `GITHUB_TOKEN` / `GH_TOKEN`。管理端使用相应的 `/opt/proxy-manage-server/bin/proxy-manage-server` 和 unit 名。更新不自动重启、不修改配置/数据库/核心；旧程序保存为 `.previous`，数据库须独立备份。[渠道、凭据及回退步骤](docs/releases.md)。
-
-## 本地手动构建
-
-需要 Go 1.25+（版本见 `go.mod`）、Node.js 20+ 和 npm。首次安装前端依赖，然后构建两个二进制：
+### 2. 标准开发与发布步骤
 
 ```bash
+# 1. 首次安装前端依赖
 npm --prefix web ci
+
+# 2. 构建前端（同步至 internal/webui/dist）+ 构建本地双端二进制 + 运行全量测试与静态检查
 GOTOOLCHAIN=auto make build
 GOTOOLCHAIN=auto make test check
-```
 
-`make build` 先将 `web/dist` 复制到 `internal/webui/dist`，再构建 `bin/proxy-server` 与 `bin/proxy-manage-server`。目标机器只需要相应二进制；管理端不需要 Node.js、npm、独立前端进程或数据库服务。跨平台构建时可在 `make build` 前设置 `GOOS=linux GOARCH=amd64`（ARM64 使用 `arm64`）。
+# 3. 提交代码（含更新后的 internal/webui/dist 嵌入产物）并推送到远端
+git add -A
+git commit -m "feat: your changes"
+git push origin main
 
-需要分发到 VPS 时，在工作树干净、当前 commit 已自行 push 后，使用本地手动发布入口：
-
-```bash
-gh auth login
+# 4. 本地交叉编译 Linux (amd64/arm64/armv7) 全套产物并发布到 GitHub Release
+gh auth status
 GOTOOLCHAIN=auto make publish
 ```
 
-`make publish` 在开发机编译三种 Linux 架构的六个程序及安装文件，校验清单，再通过 draft 上传完整资产并发布；默认版本为 `main-<sha12>` prerelease，VPS 的默认 main 渠道可获取。它不会自动 commit/push，已发布的同名 tag 不会被覆盖。发布凭据需要仓库写权限，不能复用 VPS 的只读下载 token；实际发布必须以 GitHub API 成功为准。
+`make publish` 底层调用 `scripts/publish-release.sh`：在本地编译 3 种 Linux 架构共 6 个静态二进制（管理端已内嵌最新前端），打包 `install.sh`、`install-bundle.tar.gz` 与 `SHA256SUMS`，创建草稿上传完整 9 个文件校验无误后正式公开为 `main-<sha12>` prerelease（对应服务端默认的 `main` 更新渠道）。
+
+常用可选构建与发布命令：
 
 ```bash
-# 只在本地构建、校验，不需要 gh 登录，也不上传
-GOTOOLCHAIN=auto bash scripts/publish-release.sh --dry-run
-# 发布指定正式版本（换成实际版本号）
+# 发布正式稳定版 tag（对应服务端的 --channel stable）
 GOTOOLCHAIN=auto bash scripts/publish-release.sh --tag v0.1.0
-```
 
-只需要本地产物时使用 `make release`，输出到 `bin/releases/`，不上传。完整参数与手动发布流程见[发布指南](docs/releases.md#维护者手动构建与发布)。当前 `update` 只下载已发布二进制，没有拉取源码并重新编译的更新功能。
+# Dry-run：仅在本地构建并校验全部 9 个发布文件，不要求 gh 登录、不上传远端
+GOTOOLCHAIN=auto bash scripts/publish-release.sh --dry-run
 
-Makefile 对 Go 构建、测试和 vet 使用 Hertz 的 `stdjson` build tag；手动执行对应命令时也应添加 `-tags stdjson,gjson`，避免依赖 Sonic 的特定 Go 编译器版本支持。
+# 仅在本地生成 Linux 发布包到 bin/releases/，不调用发布逻辑
+GOTOOLCHAIN=auto make release
 
-不重建前端时可使用纯 Go 路径，复用已提交的嵌入资源，不需要 Node：
-
-```bash
+# 未改动前端时复用已提交的 internal/webui/dist 纯 Go 构建（无需 Node）
 GOMAXPROCS=1 GOFLAGS="-p=1" GOTOOLCHAIN=auto make build-go
 ```
 
-Go 拉取源码、自编译及 1 GiB 构建限制见 [源码构建评估](docs/source-build.md)。当前未实现源码自更新命令。
+> Makefile 默认附加 `-tags stdjson,gjson` 构建与测试；手动运行 `go build/test/vet` 时也需带上 `-tags stdjson,gjson`。更多细节见[发布与更新指南](docs/releases.md#维护者手动构建与发布)与[源码构建评估](docs/source-build.md)。
 
-## 本地体验管理端
+---
+
+## Server 端免编译安装
+
+目标 Linux 服务器**不需要安装 Go 或 Node.js**，仅需系统具备 `python3`、`openssl`、`systemd`（`useradd`、`install`）及 `curl`。
+
+### 1. 准备下载凭据（仅私有仓库需要）
+
+- **公开仓库**：无需任何 GitHub Token，下文所有命令省略 `--token-file`（或 `GITHUB_TOKEN`）即可。
+- **私有仓库**：在 GitHub 创建仅勾选本仓库、权限仅为 **Contents: Read-only** 的 Fine-grained PAT，在服务器上保存为 `0600` 权限文件：
+  ```bash
+  sudo install -d -m 0700 /root/.config/proxy-server-mono
+  sudo sh -c 'umask 077 && cat > /root/.config/proxy-server-mono/github-token'
+  # 粘贴只读 PAT 后按 Ctrl-D
+  ```
+
+### 2. 两种获取安装脚本的方式
+
+无论选择哪种方式，执行 `install.sh` 时都会自动从 GitHub Release 下载匹配当前服务器架构的已编译二进制与 `install-bundle.tar.gz`，核验 `SHA256SUMS` 后配置 `systemd` 服务，**全程不在服务器编译**：
+
+- **方式 A（拉取仓库后运行脚本）**：在服务器上 `git clone` 或 `git pull` 仓库后，直接运行仓库内的 `./scripts/install.sh`。
+- **方式 B（免克隆仓库，仅下载单文件 `install.sh`）**：通过 GitHub API 安全拉取 `scripts/install.sh`（具体 `curl` 命令见 [releases.md](docs/releases.md#下载-bootstrap-脚本)）。
+
+`install.sh` 通用语法（`--` 前为下载源参数，`--` 后透传给底层安装器）：
+
+```text
+bash scripts/install.sh manager|node [--repo owner/repo] [--channel main|stable]
+                        [--version TAG] [--token-file PATH] -- INSTALLER_ARGUMENTS
+```
+
+### 3. 安装管理端（proxy-manage-server）
+
+```bash
+# 默认拉取最新 main-<sha12> 发布；正式版可加 --channel stable
+sudo bash ./scripts/install.sh manager \
+  --token-file /root/.config/proxy-server-mono/github-token -- \
+  --public-url https://manager.example.com
+```
+
+- 若管理端直接提供 HTTPS（无需前置反向代理），在 `--` 后替换为：`--listen 0.0.0.0:8443 --public-url https://manager.example.com:8443 --tls-cert /path/fullchain.pem --tls-key /path/privkey.pem`。
+- 首次初始化自动生成的 `ADMIN_TOKEN`（后台登录令牌）与 `ENROLL_TOKEN`（节点注册准入令牌）保存在 `/etc/proxy-manage-server/manager.env`（`0600`）。
+
+### 4. 安装代理节点（proxy-server）
+
+先按[部署指南](docs/deployment.md#代理节点)在节点准备好官方固定版本的 `hysteria` 与 `xray` 二进制及预期 SHA256（安装器不会自动拉取 `latest` 协议核心），然后执行：
+
+```bash
+read -r -s -p 'Manager enrollment key: ' ENROLL_TOKEN && printf '\n'
+export ENROLL_TOKEN
+sudo --preserve-env=ENROLL_TOKEN bash ./scripts/install.sh node \
+  --token-file /root/.config/proxy-server-mono/github-token -- \
+  --manager https://manager.example.com --server node01.example.com --name node01 \
+  --hy2-port 443 --vless-port 443 \
+  --hysteria-binary "$HYSTERIA_BINARY" --hysteria-sha256 "$HYSTERIA_SHA256" \
+  --core-version "hysteria=$HYSTERIA_VERSION" \
+  --xray-binary "$XRAY_BINARY" --xray-sha256 "$XRAY_SHA256" \
+  --core-version "xray=$XRAY_VERSION"
+unset ENROLL_TOKEN
+```
+
+---
+
+## Server 端免编译更新与回退
+
+当你在本地修改了后端或前端代码并执行 `make publish` 发布新 Release 后，服务端有两种免编译更新方式：
+
+### 1. 使用内置 `update` 命令直接更新（推荐，无需拉取源码）
+
+已安装的 `proxy-manage-server` 与 `proxy-server` 均内置 `update` 子命令，直接从 GitHub Release 下载对应架构新二进制、校验 `SHA256SUMS`、将旧版备份为 `.previous` 并原子替换。**更新管理端二进制即一次性完成后端 + 内嵌前端升级**，不会修改 SQLite 数据库、配置文件或节点协议核心。
+
+- **更新管理端（前后端一体更新）**：
+  ```bash
+  # 1. 查看当前版本与检查远端候选更新
+  /opt/proxy-manage-server/bin/proxy-manage-server version
+  sudo /opt/proxy-manage-server/bin/proxy-manage-server update --check \
+    --token-file /root/.config/proxy-server-mono/github-token
+
+  # 2. 建议升级前备份数据目录（含 manager.db 与 master.key），随后更新并重启生效
+  sudo /opt/proxy-manage-server/bin/proxy-manage-server update \
+    --token-file /root/.config/proxy-server-mono/github-token
+  sudo systemctl restart proxy-manage-server
+  ```
+  *(公开库可省略 `--token-file`；切换稳定版加 `--channel stable`，固定版本加 `--version TAG`。)*
+
+- **更新代理节点 Agent**：
+  ```bash
+  /opt/proxy-server/bin/proxy-server version
+  sudo /opt/proxy-server/bin/proxy-server update --check \
+    --token-file /root/.config/proxy-server-mono/github-token
+  sudo /opt/proxy-server/bin/proxy-server update \
+    --token-file /root/.config/proxy-server-mono/github-token
+  sudo systemctl restart proxy-server
+  ```
+
+### 2. 拉取仓库最新代码后通过脚本更新（可选）
+
+如果服务端保留了 Git 仓库克隆，也可以 `git pull` 后重新执行 `./scripts/install.sh`（当 `systemd` 单元或安装布局有变更时尤为适用），底层安装器会保留已有的 `manager.env`、SQLite 数据库、节点身份与证书并完成二进制替换及服务重启：
+
+```bash
+git pull --ff-only
+sudo bash ./scripts/install.sh manager \
+  --token-file /root/.config/proxy-server-mono/github-token -- \
+  --public-url https://manager.example.com
+```
+
+### 3. 二进制快速回退
+
+每次 `update` 成功后均保留上一版可执行文件为 `.previous`（仅回退二进制，不回滚 SQLite 数据迁移；完整备份与恢复规范见 [releases.md](docs/releases.md#升级前备份与二进制回退)）：
+
+```bash
+sudo systemctl stop proxy-manage-server
+sudo cp -p /opt/proxy-manage-server/bin/proxy-manage-server.previous \
+  /opt/proxy-manage-server/bin/proxy-manage-server
+sudo systemctl start proxy-manage-server
+```
+
+---
+
+## 本地运行与调试
 
 ```bash
 export ADMIN_TOKEN="$(openssl rand -hex 32)"
@@ -85,26 +193,27 @@ export PUBLIC_URL=http://127.0.0.1:8080
 ./bin/proxy-manage-server
 ```
 
-访问 `http://127.0.0.1:8080`，使用自己设置的 `ADMIN_TOKEN` 登录。登录 key 存在浏览器会话存储中。管理端首次启动会在 `DATA_DIR/master.key` 创建加密密钥；也可以通过 `MASTER_KEY` 指定 base64 编码的 32 字节密钥。不要把运行目录或密钥加入 Git。
+访问 `http://127.0.0.1:8080`，使用 `ADMIN_TOKEN` 登录。管理端首次启动会在 `DATA_DIR/master.key` 创建加密主密钥（也可通过 `MASTER_KEY` 指定 base64 编码的 32 字节密钥）。前端热更新调试可在另一终端运行 `npm --prefix web run dev`（Vite 自动将 `/api` 和 `/sub` 代理至 `127.0.0.1:8080`）。
 
-开发前端时另开终端运行 `npm --prefix web run dev`，Vite 将 `/api` 和 `/sub` 请求代理到本地管理端。
+---
 
-## 部署与节点接入
+## 订阅分流与节点接入说明
 
-详细步骤见 [部署指南](docs/deployment.md)，二进制下载/更新见 [发布指南](docs/releases.md)，系统结构见 [架构说明](docs/architecture.md)，字段及认证方式见 [API 契约](docs/api.md)，验证范围与资源抽样见 [验证记录](docs/verification.md)。
+详细系统设计见 [架构说明](docs/architecture.md)，接口定义见 [API 契约](docs/api.md)，部署细节见 [部署指南](docs/deployment.md)，验证与资源抽样见 [验证记录](docs/verification.md)。
 
-节点配置里的 `manager_url` 可以使用管理端的域名或 IP：`https://manager.example.com` / `https://203.0.113.10:8443`。IP 连接也必须通过证书校验，使用包含该 IP SAN 的证书；私有 CA 可用 `--ca-file` 导入。登录 key 是 `ENROLL_TOKEN`，首次注册换取节点自己的 token，后续心跳不再使用共享 enrollment key。
+- **节点接入**：节点 `manager_url` 支持 HTTPS 域名或带 IP SAN 证书的 IP（私有 CA 可用 `--ca-file` 导入），首次凭 `ENROLL_TOKEN` 注册换取绑定该节点 ID 的独立 Token，私钥始终留在节点本地。
+- **动态固定订阅与专属纯净分流**：
+  - 每条订阅链接可自由勾选**通用代理节点（`🌍 代理`）**与**协议范围**，并可单独为 **Claude / Anthropic**、**ChatGPT / Codex**、**Google / Gemini（含 Antigravity、YouTube）** 指定一台或多台纯净 IP 节点。
+  - 三个专属组均采用 `REJECT` 置顶的 `url-test`（30 秒自动测速切换所选节点下最快的协议，组内全部失效或被停用/删除时自动 `REJECT` 阻断，严禁回退到脏 IP 节点或直连泄漏真实 IP）。
+  - 显式声明 `GLOBAL` 策略组并将 `🌍 代理` 置于首位，客户端切换到「全局」模式时默认复用规则模式同款节点，不会误走 `DIRECT`。
+  - 后台修改订阅节点、专属分流或停用/删除节点后，同一订阅 URL 下次刷新即刻生效；临时心跳离线不会自动移除节点；撤销订阅链接不会使客户端已下载的节点密码失效。
 
-管理端支持 `TLS_CERT_FILE` / `TLS_KEY_FILE` 直接提供 HTTPS，无需额外常驻反向代理；也可用已有反向代理连接默认的本机 HTTP 监听。证书申请与续期由部署者管理。
-
-在管理界面选择节点和协议创建订阅，保存首次显示的链接。之后编辑该订阅的节点集合时链接保持不变；禁用/删除节点会影响同一链接下一次刷新。Clash 客户端最终何时生效取决于客户端刷新间隔。临时心跳离线不会自动删除节点。链接撤销也不会使客户端已下载的代理密码失效。
+---
 
 ## 仓库技能
 
-canonical 技能位于 `skills/`，三个工具目录通过相对符号链接指向同一份内容，不安装到用户全局目录。
+Canonical 技能位于 `skills/`，`.agents/skills`、`.claude/skills`、`.codex/skills` 通过相对符号链接指向同一份内容：
 
 - [安装管理端](skills/install-proxy-manage-server/SKILL.md)
 - [安装代理节点](skills/install-proxy-server/SKILL.md)
-- [原始协议部署参考](skills/proxy-server-setup/SKILL.md)
-
-当前自动初始化 Hysteria2 与 VLESS+REALITY。原始 skill 中的 SOCKS5 / HTTP / HTTPS 配置保留为手工扩展参考，不会自动开放到每台机器。
+- [原始协议部署参考](skills/proxy-server-setup/SKILL.md)（自动初始化 Hysteria2 与 VLESS+REALITY；SOCKS5 / HTTP / HTTPS 保留为手工扩展参考）

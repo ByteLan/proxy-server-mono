@@ -27,14 +27,26 @@ export interface ProxyNode {
   endpoints: Endpoint[];
 }
 
+export interface RouteGroup {
+  custom: boolean;
+  node_ids: string[];
+}
+
+export interface SiteRoutes {
+  claude: RouteGroup;
+  chatgpt: RouteGroup;
+  google: RouteGroup;
+}
+
 export interface Subscription {
   id: string;
   name: string;
   node_ids: string[];
   protocols: string[];
+  routes: SiteRoutes;
   enabled: boolean;
   created_at: number;
   updated_at: number;
 }
 
-export type SubscriptionInput = Pick<Subscription, 'name' | 'node_ids' | 'protocols' | 'enabled'>;
+export type SubscriptionInput = Pick<Subscription, 'name' | 'node_ids' | 'protocols' | 'routes' | 'enabled'>;

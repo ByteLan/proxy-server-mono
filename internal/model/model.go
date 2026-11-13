@@ -57,12 +57,24 @@ type Node struct {
 	Endpoints  []Endpoint   `json:"endpoints"`
 }
 
+type RouteGroup struct {
+	Custom  bool     `json:"custom"`
+	NodeIDs []string `json:"node_ids"`
+}
+
+type SiteRoutes struct {
+	Claude  RouteGroup `json:"claude"`
+	ChatGPT RouteGroup `json:"chatgpt"`
+	Google  RouteGroup `json:"google"`
+}
+
 type Subscription struct {
-	ID        string   `json:"id"`
-	Name      string   `json:"name"`
-	NodeIDs   []string `json:"node_ids"`
-	Protocols []string `json:"protocols"`
-	Enabled   bool     `json:"enabled"`
-	CreatedAt int64    `json:"created_at"`
-	UpdatedAt int64    `json:"updated_at"`
+	ID        string     `json:"id"`
+	Name      string     `json:"name"`
+	NodeIDs   []string   `json:"node_ids"`
+	Protocols []string   `json:"protocols"`
+	Routes    SiteRoutes `json:"routes"`
+	Enabled   bool       `json:"enabled"`
+	CreatedAt int64      `json:"created_at"`
+	UpdatedAt int64      `json:"updated_at"`
 }

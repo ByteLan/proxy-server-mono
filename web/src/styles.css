@@ -73,13 +73,19 @@ h1 { font-size: 29px; font-weight: 650; letter-spacing: -1px; margin: 8px 0 9px;
 .switch-field { margin: 22px 0; display: flex; align-items: center; justify-content: space-between; gap: 15px; }
 .switch-field strong { font-size: 12px; font-weight: 500; color: #455e4e; }
 .switch-field p { margin: 5px 0 0; font-size: 11px; color: #93a095; line-height: 1.7; }
-.node-picker { max-height: 230px; overflow: auto; border: 1px solid #e9eeea; border-radius: 5px; padding: 4px 14px; }
+.node-picker { max-height: 200px; overflow: auto; border: 1px solid #e9eeea; border-radius: 5px; padding: 4px 14px; }
 .node-picker .arco-checkbox-group { display: block; }
-.node-option { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 43px; border-bottom: 1px solid #f1f4f1; }
+.node-option { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 41px; border-bottom: 1px solid #f1f4f1; }
 .node-option:last-child { border-bottom: 0; }
 .node-option .arco-checkbox { min-width: 0; margin-right: 0; font-size: 12px; }
 .node-option .arco-badge-status-text { font-size: 10px; color: #849789; }
 .node-option > .arco-space { flex-shrink: 0; }
+.route-box { border: 1px solid #e9eeea; border-radius: 6px; padding: 4px 14px; background: #fbfcfb; }
+.route-row { padding: 11px 0; border-bottom: 1px solid #eef2ee; }
+.route-row:last-child { border-bottom: 0; }
+.route-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.route-header strong { font-size: 12px; font-weight: 600; color: #364f40; display: block; margin-bottom: 2px; }
+.route-select { margin-top: 9px; }
 .helper { font-size: 11px; color: #92a095; line-height: 1.8; margin: 7px 0; }
 .url-box { margin: 20px 0; display: flex; flex-direction: column; align-items: flex-end; gap: 10px; }
 .url-box textarea { font-family: monospace; font-size: 12px; }

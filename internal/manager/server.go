@@ -339,13 +339,42 @@ func (s *Server) validSubscription(c *app.RequestContext, p *model.Subscription)
 	for _, n := range nodes {
 		ids[n.ID] = true
 	}
-	seen := map[string]bool{}
-	for _, id := range p.NodeIDs {
-		if !ids[id] || seen[id] {
-			fail(c, 400, "node selection contains missing or duplicate IDs")
+	checkNodeSet := func(list []string, label string) bool {
+		if len(list) > 1000 {
+			fail(c, 400, "invalid "+label+" selection")
 			return false
 		}
-		seen[id] = true
+		seen := map[string]bool{}
+		for _, id := range list {
+			if !ids[id] || seen[id] {
+				fail(c, 400, label+" selection contains missing or duplicate IDs")
+				return false
+			}
+			seen[id] = true
+		}
+		return true
+	}
+	if !checkNodeSet(p.NodeIDs, "node") {
+		return false
+	}
+	for _, item := range []struct {
+		group *model.RouteGroup
+		label string
+	}{
+		{&p.Routes.Claude, "claude route"},
+		{&p.Routes.ChatGPT, "chatgpt route"},
+		{&p.Routes.Google, "google route"},
+	} {
+		if !item.group.Custom {
+			item.group.NodeIDs = []string{}
+			continue
+		}
+		if item.group.NodeIDs == nil {
+			item.group.NodeIDs = []string{}
+		}
+		if !checkNodeSet(item.group.NodeIDs, item.label) {
+			return false
+		}
 	}
 	return true
 }
@@ -382,17 +411,7 @@ func (s *Server) writeYAML(c *app.RequestContext, p model.Subscription) {
 		internalError(c)
 		return
 	}
-	ids := map[string]bool{}
-	for _, id := range p.NodeIDs {
-		ids[id] = true
-	}
-	selected := []model.Node{}
-	for _, n := range nodes {
-		if ids[n.ID] {
-			selected = append(selected, n)
-		}
-	}
-	raw, err := clash.Render(selected, p.Protocols)
+	raw, err := clash.RenderSubscription(nodes, p)
 	if err != nil {
 		fail(c, 500, "configuration rendering failed")
 		return

@@ -47,7 +47,7 @@ Agent 约每 30 秒发送心跳。启动后的首次心跳和配置摘要变化�
 
 订阅 token 对应数据库中的当前选择。每次请求都重新读取节点和订阅，生成结构化 YAML；编辑、禁用、删除节点及修改订阅选择后，同一 URL 下一次刷新即反映变化。临时离线节点保留，避免链路波动造成订阅频繁变化。空集合输出有效的 DIRECT 配置。
 
-YAML 面向 mihomo / Clash Meta，不承诺旧 Clash 内核兼容。Hysteria2 使用证书指纹固定，VLESS 使用 REALITY 公钥与 short ID。默认规则采用精简配置；原始单机模板的大量 DNS/规则参数不直接视为所有网络的通用默认。
+YAML 面向 mihomo / Clash Meta，不承诺旧 Clash 内核兼容。Hysteria2 使用证书指纹固定，VLESS 使用 REALITY 公钥与 short ID。DNS 采用国内 DoH + `nameserver-policy` 前置分流与 `28.0.0.1/8` fake-ip；显式声明 `GLOBAL` 选择组并将 `🌍 代理` 置于首位，确保全局模式默认复用规则模式同款节点而非 `DIRECT`。Claude / ChatGPT / Google 三个专属分组均采用 `REJECT` 置顶的 `url-test`（30s 探测、`tolerance: 0`、全挂回退 `REJECT` 禁止直连并附带非 UDP 规则防泄漏兜底），支持在订阅内独立绑定纯净节点。
 
 ## 当前边界
 

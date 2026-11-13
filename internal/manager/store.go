@@ -73,10 +73,13 @@ func Open(dir, key string) (*Store, error) {
 	}
 	db.SetMaxOpenConns(1)
 	fail := func(err error) (*Store, error) { db.Close(); return nil, err }
-	for _, q := range []string{"PRAGMA journal_mode=WAL", "PRAGMA busy_timeout=5000", "PRAGMA foreign_keys=ON", "PRAGMA cache_size=-4096", `CREATE TABLE IF NOT EXISTS nodes(id TEXT PRIMARY KEY,name TEXT NOT NULL,os TEXT NOT NULL,arch TEXT NOT NULL,version TEXT NOT NULL,enabled INTEGER NOT NULL DEFAULT 1,last_seen INTEGER NOT NULL,config_hash TEXT NOT NULL DEFAULT '',cores TEXT NOT NULL DEFAULT '[]',endpoints BLOB NOT NULL,token_hash TEXT NOT NULL UNIQUE)`, `CREATE TABLE IF NOT EXISTS revoked_nodes(id TEXT PRIMARY KEY)`, `CREATE TABLE IF NOT EXISTS subscriptions(id TEXT PRIMARY KEY,name TEXT NOT NULL,node_ids TEXT NOT NULL,protocols TEXT NOT NULL,enabled INTEGER NOT NULL,token_hash TEXT NOT NULL UNIQUE,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL)`} {
+	for _, q := range []string{"PRAGMA journal_mode=WAL", "PRAGMA busy_timeout=5000", "PRAGMA foreign_keys=ON", "PRAGMA cache_size=-4096", `CREATE TABLE IF NOT EXISTS nodes(id TEXT PRIMARY KEY,name TEXT NOT NULL,os TEXT NOT NULL,arch TEXT NOT NULL,version TEXT NOT NULL,enabled INTEGER NOT NULL DEFAULT 1,last_seen INTEGER NOT NULL,config_hash TEXT NOT NULL DEFAULT '',cores TEXT NOT NULL DEFAULT '[]',endpoints BLOB NOT NULL,token_hash TEXT NOT NULL UNIQUE)`, `CREATE TABLE IF NOT EXISTS revoked_nodes(id TEXT PRIMARY KEY)`, `CREATE TABLE IF NOT EXISTS subscriptions(id TEXT PRIMARY KEY,name TEXT NOT NULL,node_ids TEXT NOT NULL,protocols TEXT NOT NULL,routes TEXT NOT NULL DEFAULT '{}',enabled INTEGER NOT NULL,token_hash TEXT NOT NULL UNIQUE,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL)`} {
 		if _, err = db.Exec(q); err != nil {
 			return fail(err)
 		}
+	}
+	if err = ensureSubscriptionRoutesColumn(db); err != nil {
+		return fail(err)
 	}
 	if err = os.Chmod(filepath.Join(dir, "manager.db"), 0600); err != nil {
 		return fail(err)
@@ -206,58 +209,128 @@ func (s *Store) deleteNode(id string) (bool, error) {
 	if n == 0 {
 		return false, nil
 	}
-	rows, err := tx.Query(`SELECT id,node_ids FROM subscriptions`)
+	rows, err := tx.Query(`SELECT id,node_ids,routes FROM subscriptions`)
 	if err != nil {
 		return false, err
 	}
-	updates := map[string]string{}
+	type subUpdate struct {
+		nodes  string
+		routes string
+	}
+	updates := map[string]subUpdate{}
 	for rows.Next() {
-		var sid, raw string
-		if err = rows.Scan(&sid, &raw); err != nil {
+		var sid, rawNodes, rawRoutes string
+		if err = rows.Scan(&sid, &rawNodes, &rawRoutes); err != nil {
 			rows.Close()
 			return false, err
 		}
 		var ids []string
-		if err = json.Unmarshal([]byte(raw), &ids); err != nil {
+		if err = json.Unmarshal([]byte(rawNodes), &ids); err != nil {
 			rows.Close()
 			return false, err
 		}
-		out := []string{}
-		for _, v := range ids {
-			if v != id {
-				out = append(out, v)
+		var routes model.SiteRoutes
+		if rawRoutes != "" {
+			if err = json.Unmarshal([]byte(rawRoutes), &routes); err != nil {
+				rows.Close()
+				return false, err
 			}
 		}
-		b, _ := json.Marshal(out)
-		updates[sid] = string(b)
+		ids = removeID(ids, id)
+		routes.Claude.NodeIDs = removeID(routes.Claude.NodeIDs, id)
+		routes.ChatGPT.NodeIDs = removeID(routes.ChatGPT.NodeIDs, id)
+		routes.Google.NodeIDs = removeID(routes.Google.NodeIDs, id)
+		normalizeRoutes(&routes)
+		nb, _ := json.Marshal(ids)
+		rb, _ := json.Marshal(routes)
+		updates[sid] = subUpdate{nodes: string(nb), routes: string(rb)}
 	}
 	err = rows.Err()
 	rows.Close()
 	if err != nil {
 		return false, err
 	}
-	for sid, raw := range updates {
-		if _, err = tx.Exec(`UPDATE subscriptions SET node_ids=?,updated_at=? WHERE id=?`, raw, time.Now().Unix(), sid); err != nil {
+	now := time.Now().Unix()
+	for sid, u := range updates {
+		if _, err = tx.Exec(`UPDATE subscriptions SET node_ids=?,routes=?,updated_at=? WHERE id=?`, u.nodes, u.routes, now, sid); err != nil {
 			return false, err
 		}
 	}
 	return true, tx.Commit()
 }
+func ensureSubscriptionRoutesColumn(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(subscriptions)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	hasRoutes := false
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, ctype string
+		var dflt sql.NullString
+		if err = rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		if name == "routes" {
+			hasRoutes = true
+		}
+	}
+	if err = rows.Err(); err != nil {
+		return err
+	}
+	if hasRoutes {
+		return nil
+	}
+	_, err = db.Exec(`ALTER TABLE subscriptions ADD COLUMN routes TEXT NOT NULL DEFAULT '{}'`)
+	return err
+}
+func removeID(ids []string, target string) []string {
+	out := []string{}
+	for _, v := range ids {
+		if v != target {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+func normalizeRouteGroup(g *model.RouteGroup) {
+	if !g.Custom || g.NodeIDs == nil {
+		if !g.Custom {
+			g.NodeIDs = []string{}
+			return
+		}
+		g.NodeIDs = []string{}
+	}
+}
+func normalizeRoutes(r *model.SiteRoutes) {
+	normalizeRouteGroup(&r.Claude)
+	normalizeRouteGroup(&r.ChatGPT)
+	normalizeRouteGroup(&r.Google)
+}
 func scanSubscription(row interface{ Scan(...any) error }) (model.Subscription, error) {
 	var p model.Subscription
-	var nodes, protocols string
-	err := row.Scan(&p.ID, &p.Name, &nodes, &protocols, &p.Enabled, &p.CreatedAt, &p.UpdatedAt)
+	var nodes, protocols, routes string
+	err := row.Scan(&p.ID, &p.Name, &nodes, &protocols, &routes, &p.Enabled, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return p, err
 	}
 	if err = json.Unmarshal([]byte(nodes), &p.NodeIDs); err != nil {
 		return p, err
 	}
-	err = json.Unmarshal([]byte(protocols), &p.Protocols)
-	return p, err
+	if err = json.Unmarshal([]byte(protocols), &p.Protocols); err != nil {
+		return p, err
+	}
+	if routes != "" {
+		if err = json.Unmarshal([]byte(routes), &p.Routes); err != nil {
+			return p, err
+		}
+	}
+	normalizeRoutes(&p.Routes)
+	return p, nil
 }
 
-const subColumns = `id,name,node_ids,protocols,enabled,created_at,updated_at`
+const subColumns = `id,name,node_ids,protocols,routes,enabled,created_at,updated_at`
 
 func (s *Store) subscriptions() ([]model.Subscription, error) {
 	rows, err := s.db.Query(`SELECT ` + subColumns + ` FROM subscriptions ORDER BY created_at,id`)
@@ -285,16 +358,20 @@ func (s *Store) createSubscription(p model.Subscription) (model.Subscription, st
 	p.ID = RandomToken()[:16]
 	p.CreatedAt = time.Now().Unix()
 	p.UpdatedAt = p.CreatedAt
+	normalizeRoutes(&p.Routes)
 	token := RandomToken()
 	ids, _ := json.Marshal(p.NodeIDs)
 	protocols, _ := json.Marshal(p.Protocols)
-	_, err := s.db.Exec(`INSERT INTO subscriptions VALUES(?,?,?,?,?,?,?,?)`, p.ID, p.Name, string(ids), string(protocols), p.Enabled, hash(token), p.CreatedAt, p.UpdatedAt)
+	routes, _ := json.Marshal(p.Routes)
+	_, err := s.db.Exec(`INSERT INTO subscriptions(id,name,node_ids,protocols,routes,enabled,token_hash,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)`, p.ID, p.Name, string(ids), string(protocols), string(routes), p.Enabled, hash(token), p.CreatedAt, p.UpdatedAt)
 	return p, token, err
 }
 func (s *Store) updateSubscription(id string, p model.Subscription) (model.Subscription, error) {
+	normalizeRoutes(&p.Routes)
 	ids, _ := json.Marshal(p.NodeIDs)
 	protocols, _ := json.Marshal(p.Protocols)
-	res, err := s.db.Exec(`UPDATE subscriptions SET name=?,node_ids=?,protocols=?,enabled=?,updated_at=? WHERE id=?`, p.Name, string(ids), string(protocols), p.Enabled, time.Now().Unix(), id)
+	routes, _ := json.Marshal(p.Routes)
+	res, err := s.db.Exec(`UPDATE subscriptions SET name=?,node_ids=?,protocols=?,routes=?,enabled=?,updated_at=? WHERE id=?`, p.Name, string(ids), string(protocols), string(routes), p.Enabled, time.Now().Unix(), id)
 	if err != nil {
 		return p, err
 	}

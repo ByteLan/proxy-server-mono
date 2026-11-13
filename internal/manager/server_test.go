@@ -2,11 +2,15 @@ package manager
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"github.com/cloudwego/hertz/pkg/common/ut"
+	"gopkg.in/yaml.v3"
 	"os"
 	"path/filepath"
+	"proxy-mono/internal/clash"
 	"proxy-mono/internal/model"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -142,5 +146,79 @@ func TestMissingKeyDoesNotOverwriteDatabase(t *testing.T) {
 func TestInvalidSelectionAndEndpoints(t *testing.T) {
 	s := testServer(t, t.TempDir())
 	mustCode(t, s, "POST", "/api/admin/subscriptions", adminTestToken, model.Subscription{Name: "bad", NodeIDs: []string{"missing"}, Enabled: true}, 400)
+	mustCode(t, s, "POST", "/api/admin/subscriptions", adminTestToken, model.Subscription{Name: "bad-route", Routes: model.SiteRoutes{Claude: model.RouteGroup{Custom: true, NodeIDs: []string{"missing"}}}, Enabled: true}, 400)
 	mustCode(t, s, "POST", "/api/agent/register", enrollTestToken, model.RegisterRequest{ID: "node", Name: "bad", Endpoints: []model.Endpoint{{ID: "a", Type: "hysteria2", Server: "http://wrong", Port: 443, Password: "x"}}}, 400)
+}
+
+func TestSiteRoutesPersistenceNodeDeletionAndLegacyMigration(t *testing.T) {
+	dir := t.TempDir()
+	// Simulate pre-routes database schema to verify automatic migration.
+	legacyDB, err := sql.Open("sqlite", filepath.Join(dir, "manager.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = legacyDB.Exec(`CREATE TABLE subscriptions(id TEXT PRIMARY KEY,name TEXT NOT NULL,node_ids TEXT NOT NULL,protocols TEXT NOT NULL,enabled INTEGER NOT NULL,token_hash TEXT NOT NULL UNIQUE,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL);
+	INSERT INTO subscriptions VALUES('legacy1','legacy','[]','[]',1,'legacyhash',100,100);`)
+	legacyDB.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "master.key"), bytes.Repeat([]byte{7}, 32), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	s := testServer(t, dir)
+	enroll(t, s, "dirty-1", "192.0.2.10")
+	enroll(t, s, "clean-1", "192.0.2.20")
+	enroll(t, s, "clean-2", "192.0.2.30")
+
+	subReq := model.Subscription{
+		Name:    "split-ai",
+		NodeIDs: []string{"dirty-1"},
+		Routes: model.SiteRoutes{
+			Claude:  model.RouteGroup{Custom: true, NodeIDs: []string{"clean-1"}},
+			ChatGPT: model.RouteGroup{Custom: true, NodeIDs: []string{"clean-2"}},
+			Google:  model.RouteGroup{Custom: false},
+		},
+		Enabled: true,
+	}
+	raw := mustCode(t, s, "POST", "/api/admin/subscriptions", adminTestToken, subReq, 201)
+	var created struct {
+		Subscription model.Subscription `json:"subscription"`
+		URL          string             `json:"url"`
+	}
+	if err := json.Unmarshal(raw, &created); err != nil {
+		t.Fatal(err)
+	}
+	subPath := strings.TrimPrefix(created.URL, "https://manager.example")
+
+	// Deleting clean-1 must NOT cause Claude to fall back to dirty-1; Custom stays true with empty NodeIDs -> REJECT only.
+	mustCode(t, s, "DELETE", "/api/admin/nodes/clean-1", adminTestToken, nil, 204)
+
+	yamlBytes := mustCode(t, s, "GET", subPath, "", nil, 200)
+	var parsed struct {
+		Groups []struct {
+			Name    string   `yaml:"name"`
+			Proxies []string `yaml:"proxies"`
+		} `yaml:"proxy-groups"`
+	}
+	if err := yaml.Unmarshal(yamlBytes, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	groups := map[string][]string{}
+	for _, g := range parsed.Groups {
+		groups[g.Name] = g.Proxies
+	}
+	if !reflect.DeepEqual(groups[clash.GroupClaude], []string{"REJECT"}) {
+		t.Fatalf("deleted clean Claude node fell back to dirty node: %v", groups[clash.GroupClaude])
+	}
+	if !reflect.DeepEqual(groups[clash.GroupChatGPT], []string{"REJECT", "clean-2 / HY2 [clean-2:hy2]"}) {
+		t.Fatalf("unexpected ChatGPT group: %v", groups[clash.GroupChatGPT])
+	}
+	if !reflect.DeepEqual(groups[clash.GroupGoogle], []string{"REJECT", "dirty-1 / HY2 [dirty-1:hy2]"}) {
+		t.Fatalf("unexpected Google default group: %v", groups[clash.GroupGoogle])
+	}
+	if groups[clash.GroupGlobal][0] != clash.GroupGeneral {
+		t.Fatalf("GLOBAL first proxy = %s, want %s", groups[clash.GroupGlobal][0], clash.GroupGeneral)
+	}
 }
