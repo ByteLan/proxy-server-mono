@@ -9,10 +9,10 @@ import (
 
 const (
 	GroupGeneral = "🌍 代理"
-	GroupAuto    = "⚡ 自动"
-	GroupClaude  = "🔒 Claude 禁止直连"
-	GroupChatGPT = "🤖 ChatGPT 禁止直连"
-	GroupGoogle  = "🔍 Google 禁止直连"
+	GroupAuto    = "[自动托管] ⚡ 最优测速"
+	GroupClaude  = "[自动托管] 🔒 Claude"
+	GroupChatGPT = "[自动托管] 🤖 ChatGPT"
+	GroupGoogle  = "[自动托管] 🔍 Google"
 	GroupGlobal  = "GLOBAL"
 
 	probeURL = "https://www.gstatic.com/generate_204"
@@ -174,6 +174,16 @@ func RenderSubscription(nodes []model.Node, sub model.Subscription) ([]byte, err
 	proxies := []map[string]any{}
 	allNames := []string{}
 	byNode := map[string][]string{}
+	usedNames := map[string]bool{
+		"DIRECT":     true,
+		"REJECT":     true,
+		GroupGeneral: true,
+		GroupAuto:    true,
+		GroupClaude:  true,
+		GroupChatGPT: true,
+		GroupGoogle:  true,
+		GroupGlobal:  true,
+	}
 	for _, node := range nodes {
 		if !node.Enabled || !needed[node.ID] {
 			continue
@@ -182,8 +192,11 @@ func RenderSubscription(nodes []model.Node, sub model.Subscription) ([]byte, err
 			if len(filter) > 0 && !filter[e.Type] {
 				continue
 			}
-			// IDs make names deterministic and collision-free across nodes/protocols.
-			name := fmt.Sprintf("%s / %s [%s:%s]", node.Name, e.Name, node.ID, e.ID)
+			label := protocolDisplayLabel(e.Type)
+			if label == "" {
+				continue
+			}
+			name := uniqueProxyName(node.Name, label, usedNames)
 			p := map[string]any{"name": name, "type": e.Type, "server": e.Server, "port": e.Port}
 			switch e.Type {
 			case "hysteria2":
@@ -277,6 +290,7 @@ func RenderSubscription(nodes []model.Node, sub model.Subscription) ([]byte, err
 			"url":       probeURL,
 			"interval":  300,
 			"tolerance": 50,
+			"hidden":    true,
 		})
 	}
 	groups = append(groups,
@@ -341,6 +355,43 @@ func strictAutoGroup(name string, memberNames []string) map[string]any {
 		"tolerance":        0,
 		"lazy":             false,
 		"max-failed-times": 1,
+		"hidden":           true,
+	}
+}
+
+func protocolDisplayLabel(proto string) string {
+	switch proto {
+	case "hysteria2":
+		return "Hysteria2"
+	case "vless":
+		return "VLESS"
+	case "socks5":
+		return "SOCKS5"
+	case "http":
+		return "HTTP"
+	case "https":
+		return "HTTPS"
+	default:
+		return ""
+	}
+}
+
+func uniqueProxyName(nodeName, protoLabel string, used map[string]bool) string {
+	cleanNode := strings.Join(strings.Fields(nodeName), " ")
+	if cleanNode == "" {
+		cleanNode = "Node"
+	}
+	base := cleanNode + " " + protoLabel
+	if !used[base] {
+		used[base] = true
+		return base
+	}
+	for seq := 2; ; seq++ {
+		candidate := fmt.Sprintf("%s #%d", base, seq)
+		if !used[candidate] {
+			used[candidate] = true
+			return candidate
+		}
 	}
 }
 

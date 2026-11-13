@@ -7,11 +7,14 @@
   - `hysteria2` 强制输出 `fingerprint`（服务端证书 SHA-256 固定指纹），不开启跳过证书校验。
   - `vless` 采用 TCP + REALITY（`xtls-rprx-vision`、公钥 `public-key` 与 `short-id`）。
 - **国内 DoH 与防污染 DNS 架构**：启用 `fake-ip`（`28.0.0.1/8`），默认 `nameserver` 与 `proxy-server-nameserver` 使用国内 DoH，配合 `nameserver-policy` 对海外及 AI 域名走代理解析，避免节点域名死锁与 DNS 抢答污染。
+- **简洁节点命名与自动托管分组隐藏**：
+  - 导出的 `proxies[].name` 统一采用 `<节点名> <协议名>` 简洁格式（`Hysteria2` / `VLESS` / `SOCKS5` / `HTTP` / `HTTPS`，例如 `sg01 Hysteria2`、`sg01 VLESS`），不拼接内部节点/端点随机 ID；仅在同名同协议冲突时追加 `#2`、`#3` 消歧。
+  - 所有无需用户手动干预的 `url-test` 策略组统一带 `[自动托管]` 前缀并设置 `hidden: true`（`[自动托管] ⚡ 最优测速`、`[自动托管] 🔒 Claude`、`[自动托管] 🤖 ChatGPT`、`[自动托管] 🔍 Google`），使 Clash Verge 等客户端代理面板默认只展示唯一的 `🌍 代理` 选择组，展开隐藏组或查看连接面板时亦清晰标明自动托管属性。
 - **`GLOBAL` 全局模式对齐**：显式输出 `GLOBAL` `select` 策略组，并将 `🌍 代理` 置于首位（而非默认的 `DIRECT`），确保用户在客户端切换至 Global 模式时默认复用与 Rule 模式一致的代理节点。
 - **三大纯净 IP 专属分流组（Claude / ChatGPT / Google）**：
-  - 分别对应 `🤖 Claude`（Anthropic / Claude 全系域名）、`🧠 ChatGPT`（OpenAI / ChatGPT / Codex / Sora 全系域名）与 `🔍 Google`（Google / Gemini / Antigravity / YouTube 全系域名）。
-  - 当某分流未开启独立指定（`custom: false`）时，默认跟随通用 `🌍 代理` 组。
-  - 当开启独立指定（`custom: true`）时，渲染为 **`REJECT` 置顶的 `url-test` 测速组**（间隔 30s，`tolerance: 0`），自动在绑定的纯净节点全协议端点间选择最低延迟链路，并额外注入非 UDP 兜底规则防止 QUIC/HTTP3 旁路泄漏。
+  - 分别对应 `[自动托管] 🔒 Claude`（Anthropic / Claude 全系域名）、`[自动托管] 🤖 ChatGPT`（OpenAI / ChatGPT / Codex / Sora 全系域名）与 `[自动托管] 🔍 Google`（Google / Gemini / Antigravity / YouTube 全系域名）。
+  - 当某分流未开启独立指定（`custom: false`）时，默认使用通用节点池自动测速。
+  - 当开启独立指定（`custom: true`）时，渲染为 **`REJECT` 置顶的 `url-test` 测速组**（间隔 30s，`tolerance: 0`，`hidden: true`），自动在绑定的纯净节点全协议端点间选择最低延迟链路，并额外注入非 UDP 兜底规则防止 QUIC/HTTP3 旁路泄漏。
 
 ## 2. 跨端代码锚点
 

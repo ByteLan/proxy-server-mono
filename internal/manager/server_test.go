@@ -212,10 +212,10 @@ func TestSiteRoutesPersistenceNodeDeletionAndLegacyMigration(t *testing.T) {
 	if !reflect.DeepEqual(groups[clash.GroupClaude], []string{"REJECT"}) {
 		t.Fatalf("deleted clean Claude node fell back to dirty node: %v", groups[clash.GroupClaude])
 	}
-	if !reflect.DeepEqual(groups[clash.GroupChatGPT], []string{"REJECT", "clean-2 / HY2 [clean-2:hy2]"}) {
+	if !reflect.DeepEqual(groups[clash.GroupChatGPT], []string{"REJECT", "clean-2 Hysteria2"}) {
 		t.Fatalf("unexpected ChatGPT group: %v", groups[clash.GroupChatGPT])
 	}
-	if !reflect.DeepEqual(groups[clash.GroupGoogle], []string{"REJECT", "dirty-1 / HY2 [dirty-1:hy2]"}) {
+	if !reflect.DeepEqual(groups[clash.GroupGoogle], []string{"REJECT", "dirty-1 Hysteria2"}) {
 		t.Fatalf("unexpected Google default group: %v", groups[clash.GroupGoogle])
 	}
 	if groups[clash.GroupGlobal][0] != clash.GroupGeneral {

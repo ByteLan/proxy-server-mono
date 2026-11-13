@@ -17,6 +17,7 @@ type parsedConfig struct {
 		Interval       int      `yaml:"interval"`
 		Tolerance      int      `yaml:"tolerance"`
 		Lazy           *bool    `yaml:"lazy"`
+		Hidden         bool     `yaml:"hidden"`
 		MaxFailedTimes int      `yaml:"max-failed-times"`
 	} `yaml:"proxy-groups"`
 	Rules []string `yaml:"rules"`
@@ -89,6 +90,9 @@ func TestRenderProtocolParametersAndReferences(t *testing.T) {
 	if len(cfg.Proxies) != 3 {
 		t.Fatal("missing endpoints")
 	}
+	if cfg.Proxies[0]["name"] != "same Hysteria2" || cfg.Proxies[1]["name"] != "same VLESS" || cfg.Proxies[2]["name"] != "same Hysteria2 #2" {
+		t.Fatalf("unexpected clean proxy names: %v / %v / %v", cfg.Proxies[0]["name"], cfg.Proxies[1]["name"], cfg.Proxies[2]["name"])
+	}
 	if cfg.Proxies[0]["fingerprint"] != strings.Repeat("a", 64) {
 		t.Fatal("certificate pin missing")
 	}
@@ -156,6 +160,7 @@ func TestGlobalDefaultsToRuleProxyAndStrictSiteGroupsIsolateNodes(t *testing.T) 
 		Interval       int
 		Tolerance      int
 		Lazy           *bool
+		Hidden         bool
 		MaxFailedTimes int
 	}{}
 	for _, g := range cfg.Groups {
@@ -165,27 +170,36 @@ func TestGlobalDefaultsToRuleProxyAndStrictSiteGroupsIsolateNodes(t *testing.T) 
 			Interval       int
 			Tolerance      int
 			Lazy           *bool
+			Hidden         bool
 			MaxFailedTimes int
-		}{g.Type, g.Proxies, g.Interval, g.Tolerance, g.Lazy, g.MaxFailedTimes}
+		}{g.Type, g.Proxies, g.Interval, g.Tolerance, g.Lazy, g.Hidden, g.MaxFailedTimes}
+	}
+
+	// GLOBAL and GroupGeneral must stay visible; GroupAuto and strict groups must be hidden.
+	if groupByName[GroupGeneral].Hidden {
+		t.Fatal("GroupGeneral must remain visible")
+	}
+	if !groupByName[GroupAuto].Hidden {
+		t.Fatal("GroupAuto must be hidden by default")
 	}
 
 	// GLOBAL must explicitly default to GroupGeneral ("🌍 代理"), never DIRECT.
 	global, ok := groupByName[GroupGlobal]
-	if !ok || global.Type != "select" || global.Proxies[0] != GroupGeneral {
+	if !ok || global.Type != "select" || global.Hidden || global.Proxies[0] != GroupGeneral {
 		t.Fatalf("GLOBAL group must default to %s, got %+v", GroupGeneral, global)
 	}
 
 	// General group only has dirty node (plus auto & DIRECT).
-	dirtyHY2 := "SG-Dirty / HY2 [dirty:hy2]"
-	cleanAHY2 := "US-Clean-A / HY2 [clean-a:hy2]"
-	cleanAVLESS := "US-Clean-A / VLESS [clean-a:vless]"
-	cleanBHY2 := "JP-Clean-B / HY2 [clean-b:hy2]"
+	dirtyHY2 := "SG-Dirty Hysteria2"
+	cleanAHY2 := "US-Clean-A Hysteria2"
+	cleanAVLESS := "US-Clean-A VLESS"
+	cleanBHY2 := "JP-Clean-B Hysteria2"
 
 	if want := []string{GroupAuto, dirtyHY2, "DIRECT"}; !reflect.DeepEqual(groupByName[GroupGeneral].Proxies, want) {
 		t.Fatalf("unexpected general proxies: got %v want %v", groupByName[GroupGeneral].Proxies, want)
 	}
 
-	// Strict site groups must be url-test, REJECT-first, tolerance 0, lazy=false, max-failed-times=1, no DIRECT, no dirty node.
+	// Strict site groups must be hidden url-test, REJECT-first, tolerance 0, lazy=false, max-failed-times=1, no DIRECT, no dirty node.
 	for name, wantProxies := range map[string][]string{
 		GroupClaude:  {"REJECT", cleanAHY2, cleanAVLESS},
 		GroupChatGPT: {"REJECT", cleanBHY2},
@@ -195,8 +209,8 @@ func TestGlobalDefaultsToRuleProxyAndStrictSiteGroupsIsolateNodes(t *testing.T) 
 		if !exists {
 			t.Fatalf("missing group %s", name)
 		}
-		if g.Type != "url-test" || g.Interval != 30 || g.Tolerance != 0 || g.Lazy == nil || *g.Lazy != false || g.MaxFailedTimes != 1 {
-			t.Fatalf("group %s is not strict v4 url-test: %+v", name, g)
+		if g.Type != "url-test" || !g.Hidden || g.Interval != 30 || g.Tolerance != 0 || g.Lazy == nil || *g.Lazy != false || g.MaxFailedTimes != 1 {
+			t.Fatalf("group %s is not strict hidden url-test: %+v", name, g)
 		}
 		if !reflect.DeepEqual(g.Proxies, wantProxies) {
 			t.Fatalf("group %s proxies: got %v want %v", name, g.Proxies, wantProxies)
