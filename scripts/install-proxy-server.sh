@@ -107,6 +107,85 @@ enroll_token=${ENROLL_TOKEN:-${PROXY_ENROLL_TOKEN:-}}
 if [[ ! -e "$env_file" ]]; then
   [[ "$enroll_token" =~ ^[A-Za-z0-9._~+/=-]{32,}$ ]] || { echo 'Set ENROLL_TOKEN to the manager enrollment token (at least 32 characters).' >&2; exit 2; }
 fi
+unit_slug() {
+  printf '%s' "$1" | sed 's/[^A-Za-z0-9_-]/-/g'
+}
+
+dedup_units() {
+  local u seen=" "
+  for u in "$@"; do
+    [[ -n "$u" && "$seen" != *" $u "* ]] || continue
+    seen+="$u "
+    printf '%s\n' "$u"
+  done
+}
+
+write_adopt_systemd_units() {
+  local root=$1
+  shift
+  local units=() u
+  while IFS= read -r u; do
+    [[ -n "$u" ]] && units+=("$u")
+  done < <(dedup_units "$@")
+  (( ${#units[@]} > 0 )) || return 0
+
+  local systemctl_bin rm_bin joined
+  if [[ -n "$root" ]]; then
+    systemctl_bin=/bin/systemctl
+    rm_bin=/bin/rm
+  else
+    systemctl_bin=$(command -v systemctl 2>/dev/null || printf '/bin/systemctl')
+    rm_bin=$(command -v rm 2>/dev/null || printf '/bin/rm')
+  fi
+
+  install -d -m 0700 "$root/etc/proxy-server/recover"
+  install -d -m 0755 "$root/etc/systemd/system/proxy-server.service.d"
+  joined="${units[*]}"
+  cat > "$root/etc/systemd/system/proxy-server.service.d/adopted-cores.conf" <<EOF
+[Unit]
+Wants=$joined
+After=$joined
+EOF
+  chmod 0644 "$root/etc/systemd/system/proxy-server.service.d/adopted-cores.conf"
+
+  local slug
+  for u in "${units[@]}"; do
+    slug=$(unit_slug "$u")
+    cat > "$root/etc/systemd/system/proxy-server-recover-${slug}.path" <<EOF
+[Unit]
+Description=Scoped recovery trigger for $u
+StartLimitIntervalSec=0
+
+[Path]
+PathExists=/etc/proxy-server/recover/${u}.trigger
+Unit=proxy-server-recover-${slug}.service
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    cat > "$root/etc/systemd/system/proxy-server-recover-${slug}.service" <<EOF
+[Unit]
+Description=Scoped recovery starter for $u
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+ExecStart=$systemctl_bin start $u
+ExecStopPost=-$rm_bin -f /etc/proxy-server/recover/${u}.trigger
+EOF
+    chmod 0644 "$root/etc/systemd/system/proxy-server-recover-${slug}.path" \
+               "$root/etc/systemd/system/proxy-server-recover-${slug}.service"
+  done
+}
+
+extract_config_units() {
+  local cfg_file=$1 u
+  [[ -f "$cfg_file" ]] || return 0
+  while IFS= read -r u; do
+    [[ "$u" =~ ^[A-Za-z0-9@_][A-Za-z0-9@._-]*$ ]] && printf '%s\n' "$u"
+  done < <(sed -n 's/.*"unit"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$cfg_file")
+}
+
 install -d -m 0755 "$stage/opt/proxy-server/bin" "$stage/etc/systemd/system"
 install -d -m 0700 "$stage/etc/proxy-server"
 install -m 0755 "$binary" "$stage/opt/proxy-server/bin/proxy-server"
@@ -126,6 +205,9 @@ if [[ -n "$ca_file" ]]; then
   ca_args=(--ca-file /etc/proxy-server/manager-ca.pem)
 fi
 if [[ -n "$stage" ]]; then
+  if (( adopt_existing )); then
+    write_adopt_systemd_units "$stage" "${hysteria_unit:-hysteria.service}" "${xray_unit:-xray.service}"
+  fi
   echo 'Staged node files. Config initialization, enrollment, user creation and service startup were skipped.'
   echo 'The staged tree is for installation inspection, not an enrolled/runnable node.'
   exit 0
@@ -150,9 +232,26 @@ if [[ ! -e /etc/proxy-server/config.json ]]; then
 else
   echo 'Preserved existing node configuration; changes to name/address/ports require an explicit config edit.'
 fi
+adopted_units=()
+if (( adopt_existing )); then
+  while IFS= read -r u; do
+    [[ -n "$u" ]] && adopted_units+=("$u")
+  done < <(extract_config_units /etc/proxy-server/config.json)
+  if (( ${#adopted_units[@]} == 0 )); then
+    [[ -n "$hysteria_unit" ]] && adopted_units+=("$hysteria_unit")
+    [[ -n "$xray_unit" ]] && adopted_units+=("$xray_unit")
+  fi
+  write_adopt_systemd_units "" "${adopted_units[@]}"
+fi
 chown -R proxy-node:proxy-node /etc/proxy-server
 chown root:root /etc/proxy-server/node.env
 systemctl daemon-reload
+if (( adopt_existing && ${#adopted_units[@]} > 0 )); then
+  while IFS= read -r u; do
+    [[ -n "$u" ]] || continue
+    systemctl enable --now "proxy-server-recover-$(unit_slug "$u").path"
+  done < <(dedup_units "${adopted_units[@]}")
+fi
 systemctl enable proxy-server.service
 systemctl restart proxy-server.service
 echo 'Installed node. Check journalctl -u proxy-server for registration and core status.'

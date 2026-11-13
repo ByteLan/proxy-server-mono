@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -614,5 +615,132 @@ func TestMultiManagerConcurrentEnrollmentAndLifecycle(t *testing.T) {
 	}
 	if _, err := RemoveManager(configPath, mgr1.URL); err == nil {
 		t.Fatal("RemoveManager allowed removing the last remaining manager")
+	}
+}
+
+func TestSupervisorCapsConsecutiveCrashRestartsAtTen(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell test")
+	}
+	dir := t.TempDir()
+	counterFile := filepath.Join(dir, "runs.txt")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sup := newSupervisorWithOptions(ctx, []Command{{
+		Name: "crashy",
+		Path: "/bin/sh",
+		Args: []string{"-c", "printf x >> " + quote(counterFile) + "; exit 2"},
+	}}, supervisorOptions{
+		minBackoff:   time.Millisecond,
+		maxBackoff:   2 * time.Millisecond,
+		healthyAfter: time.Hour,
+		maxAttempts:  10,
+	})
+
+	finished := make(chan error, 1)
+	go func() { sup.wait(); finished <- nil }()
+	finish(t, finished)
+
+	statuses := sup.status()
+	if len(statuses) != 1 || statuses[0].Running || !strings.Contains(statuses[0].Error, "gave up after 10 recovery attempts") {
+		t.Fatalf("unexpected supervisor terminal status: %+v", statuses)
+	}
+	runs, err := os.ReadFile(counterFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 1 initial launch + 10 backoff recovery attempts = 11 executions total.
+	if len(runs) != 11 {
+		t.Fatalf("expected 11 total launches (initial + 10 retries), got %d", len(runs))
+	}
+}
+
+func TestServiceMonitorExponentialBackoffCapsAtTenAndResetsOnRecovery(t *testing.T) {
+	now := time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
+	var xrayUp atomic.Bool
+	var startCalls atomic.Int32
+	var startRecoversOnCall atomic.Int32
+
+	mon := newServiceMonitor(
+		func(_ context.Context, unit string) (bool, string) {
+			if unit == "hysteria.service" {
+				return true, ""
+			}
+			if xrayUp.Load() {
+				return true, ""
+			}
+			return false, "systemd unit " + unit + " is not active"
+		},
+		func(_ context.Context, unit string) error {
+			call := startCalls.Add(1)
+			if target := startRecoversOnCall.Load(); target > 0 && call == target {
+				xrayUp.Store(true)
+				return nil
+			}
+			return errors.New("failed to start")
+		},
+		2*time.Second,
+		5*time.Minute,
+	)
+	mon.now = func() time.Time { return now }
+
+	svcs := []ExternalService{
+		{Name: "hysteria", Unit: "hysteria.service"},
+		{Name: "xray", Unit: "xray.service"},
+	}
+
+	// Phase 1: xray fails attempt 1, backs off during cooldown, then recovers on attempt 2.
+	startRecoversOnCall.Store(2)
+	st := mon.check(context.Background(), svcs)
+	if st[1].Running || startCalls.Load() != 1 || !strings.Contains(st[1].Error, "attempt 1/10 failed") {
+		t.Fatalf("expected attempt 1 failure, got %+v (calls=%d)", st[1], startCalls.Load())
+	}
+	// 1s later (< 2s backoff): must NOT invoke ServiceStart again yet.
+	now = now.Add(time.Second)
+	st = mon.check(context.Background(), svcs)
+	if st[1].Running || startCalls.Load() != 1 || !strings.Contains(st[1].Error, "backing off") {
+		t.Fatalf("expected cooldown backoff without extra start call, got %+v (calls=%d)", st[1], startCalls.Load())
+	}
+	// At +2s: attempt 2 runs and brings xray back online immediately!
+	now = now.Add(time.Second)
+	st = mon.check(context.Background(), svcs)
+	if !st[1].Running || st[1].Error != "" || startCalls.Load() != 2 {
+		t.Fatalf("expected recovery on attempt 2, got %+v (calls=%d)", st[1], startCalls.Load())
+	}
+
+	// Phase 2: xray goes down permanently; verify fresh 10-attempt budget and hard cap at 10!
+	startCalls.Store(0)
+	startRecoversOnCall.Store(0)
+	xrayUp.Store(false)
+
+	for i := 1; i <= 10; i++ {
+		st = mon.check(context.Background(), svcs)
+		if st[1].Running || int(startCalls.Load()) != i {
+			t.Fatalf("iteration %d: unexpected status %+v (calls=%d)", i, st[1], startCalls.Load())
+		}
+		if i < 10 && !strings.Contains(st[1].Error, "failed") {
+			t.Fatalf("iteration %d: expected failed message, got %q", i, st[1].Error)
+		}
+		if i == 10 && !strings.Contains(st[1].Error, "gave up after 10 recovery attempts") {
+			t.Fatalf("iteration 10: expected gave up message, got %q", st[1].Error)
+		}
+		now = now.Add(10 * time.Minute)
+	}
+
+	// Further checks hours later must NOT call ServiceStart past 10 attempts while down.
+	for range 3 {
+		now = now.Add(time.Hour)
+		st = mon.check(context.Background(), svcs)
+		if st[1].Running || startCalls.Load() != 10 || !strings.Contains(st[1].Error, "gave up after 10 recovery attempts") {
+			t.Fatalf("expected hard cap at 10 attempts, got %+v (calls=%d)", st[1], startCalls.Load())
+		}
+	}
+
+	// Once operator fixes xray manually, status returns to Running and budget resets.
+	xrayUp.Store(true)
+	st = mon.check(context.Background(), svcs)
+	if !st[1].Running || st[1].Error != "" {
+		t.Fatalf("expected healthy status after manual fix, got %+v", st[1])
 	}
 }

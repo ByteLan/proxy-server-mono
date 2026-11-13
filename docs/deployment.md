@@ -95,7 +95,7 @@ sudo --preserve-env=ENROLL_TOKEN bash scripts/install-proxy-server.sh \
 
 - 脚本只安装 `/opt/proxy-server/bin/proxy-server` 与 `proxy-server.service`，**不覆盖或重启已有 `hysteria` / `xray` 二进制及 systemd 服务，不改动现有端口与连接密码**。
 - `proxy-server adopt` 默认读取 `/etc/hysteria/config.yaml`（提取密码、监听端口、证书 SHA-256 指纹与 SNI）与 `/etc/xray/config.json`（支持 JSONC 注释，提取 `vless`+REALITY 公钥、`socks`、`http`、`http`+TLS 入站），私钥始终不写入 `/etc/proxy-server/config.json`。自定义路径或服务名可通过 `--hysteria-config`、`--hysteria-unit`、`--xray-config`、`--xray-unit` 指定。
-- 运行时 `proxy-server` 不拉起子进程，而是通过 `systemctl is-active` 探测被收编的 systemd 单元状态并随心跳上报；后续重启或升级 `proxy-server` **不会中断**原有的代理连接。
+- 安装脚本自动写入 `proxy-server.service.d/adopted-cores.conf`（`Wants=` + `After=` 弱依赖与启动先后顺序，避免用 `Requires=`/`BindsTo=` 导致内核异常连带杀掉 Agent）以及受限的 `proxy-server-recover-*.path/.service` 恢复单元。运行时 `proxy-server` 通过 `systemctl is-active` 探测被收编单元状态：若某内核未运行，`proxy-server` **不会崩溃退出**，而是按指数退避自动尝试拉起该服务（连续失败**至多尝试 10 次**；恢复后计数清零，超过 10 次停止拉起并持续通过心跳向管理端告警）。后续重启或升级 `proxy-server` **不会中断**原有的代理连接。
 
 ### 多管理端同时接入（Multi-Manager）
 

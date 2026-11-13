@@ -112,7 +112,7 @@ sudo bash ./scripts/install.sh manager \
 支持以下两种节点部署模式（二选一）：
 
 - **方案 A：已有内核机器无感收编（`--adopt-existing`）**
-  适用于已经运行 `hysteria.service` / `xray.service`（例如先前按 `proxy-server-setup` 搭建）的存量云服务器。脚本仅安装 `proxy-server` Agent，**不重装内核二进制、不改端口与密码、不中断现有连接**，自动只读提取 `/etc/hysteria/config.yaml` 与 `/etc/xray/config.json`（含 `hysteria2`、`vless` REALITY 公钥推导、`socks5`、`http`、`https` 及证书 SHA-256 指纹）并通过 `systemctl is-active` 探测原有服务存活上报给管理端：
+  适用于已经运行 `hysteria.service` / `xray.service`（例如先前按 `proxy-server-setup` 搭建）的存量云服务器。脚本仅安装 `proxy-server` Agent，**不重装内核二进制、不改端口与密码、不中断现有连接**，自动只读提取 `/etc/hysteria/config.yaml` 与 `/etc/xray/config.json`（含 `hysteria2`、`vless` REALITY 公钥推导、`socks5`、`http`、`https` 及证书 SHA-256 指纹），配置开机启动顺序（`Wants=` + `After=`），并在内核意外停止时按指数退避自动尝试拉起（连续失败**至多 10 次**，Agent 自身绝不因内核异常而退出）：
 
   ```bash
   read -r -s -p 'Manager enrollment key: ' ENROLL_TOKEN && printf '\n'

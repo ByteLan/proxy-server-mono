@@ -215,6 +215,7 @@ class BootstrapTest(unittest.TestCase):
         self.assertTrue((stage / 'opt/proxy-server/bin/hysteria').exists())
         self.assertTrue((stage / 'opt/proxy-server/bin/xray').exists())
         self.assertTrue((stage / 'opt/proxy-server/core-versions').exists())
+        self.assertFalse((stage / 'etc/systemd/system/proxy-server.service.d/adopted-cores.conf').exists())
 
     def test_node_adopt_existing_staging_and_conflict_rejection(self):
         _, stage = self.run_bootstrap(
@@ -225,6 +226,12 @@ class BootstrapTest(unittest.TestCase):
         self.assertFalse((stage / 'opt/proxy-server/bin/hysteria').exists())
         self.assertFalse((stage / 'opt/proxy-server/bin/xray').exists())
         self.assertFalse((stage / 'opt/proxy-server/core-versions').exists())
+        dropin = (stage / 'etc/systemd/system/proxy-server.service.d/adopted-cores.conf').read_text()
+        self.assertIn('Wants=hysteria.service xray.service', dropin)
+        self.assertIn('After=hysteria.service xray.service', dropin)
+        self.assertTrue((stage / 'etc/proxy-server/recover').is_dir())
+        self.assertTrue((stage / 'etc/systemd/system/proxy-server-recover-hysteria-service.path').exists())
+        self.assertTrue((stage / 'etc/systemd/system/proxy-server-recover-xray-service.service').exists())
 
         result, _ = self.run_bootstrap(
             role='node', failure=True,

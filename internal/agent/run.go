@@ -14,6 +14,7 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -30,6 +31,9 @@ type Runner struct {
 	RetryMin          time.Duration
 	RetryMax          time.Duration
 	ServiceProbe      func(ctx context.Context, unit string) (bool, string)
+	ServiceStart      func(ctx context.Context, unit string) error
+	ServiceRetryMin   time.Duration
+	ServiceRetryMax   time.Duration
 	Logf              func(string, ...any)
 }
 
@@ -111,6 +115,17 @@ func (r *Runner) Run(ctx context.Context, configPath string) error {
 	curEndpoints := append([]model.Endpoint(nil), cfg.Endpoints...)
 	curServices := append([]ExternalService(nil), cfg.Services...)
 
+	starter := r.ServiceStart
+	if starter == nil && r.ServiceProbe == nil {
+		absConfig, absErr := filepath.Abs(configPath)
+		if absErr == nil {
+			starter = defaultServiceStarter(filepath.Dir(absConfig))
+		} else {
+			starter = defaultServiceStarter(filepath.Dir(configPath))
+		}
+	}
+	monitor := newServiceMonitor(r.ServiceProbe, starter, r.ServiceRetryMin, r.ServiceRetryMax)
+
 	snapshot := func(loopCtx context.Context) ([]model.Endpoint, []model.CoreStatus) {
 		stateMu.Lock()
 		// Reload connection material without sending unchanged secrets every 30s.
@@ -133,14 +148,7 @@ func (r *Runner) Run(ctx context.Context, configPath string) error {
 		stateMu.Unlock()
 
 		cores := supervisor.status()
-		probe := r.ServiceProbe
-		if probe == nil {
-			probe = probeSystemdService
-		}
-		for _, svc := range svcs {
-			running, msg := probe(loopCtx, svc.Unit)
-			cores = append(cores, model.CoreStatus{Name: svc.Name, Running: running, Error: msg})
-		}
+		cores = append(cores, monitor.check(loopCtx, svcs)...)
 		return eps, cores
 	}
 
