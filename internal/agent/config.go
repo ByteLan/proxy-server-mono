@@ -43,17 +43,52 @@ type ExternalService struct {
 	Unit string `json:"unit"`
 }
 
+// ManagerTarget configures one control-plane manager that this node reports to.
+// Multiple managers can be configured concurrently; each receives independent
+// registration and heartbeats with its own persisted node token.
+type ManagerTarget struct {
+	URL               string `json:"url"`
+	CAFile            string `json:"ca_file,omitempty"`
+	AllowInsecureHTTP bool   `json:"allow_insecure_http,omitempty"`
+	EnrollToken       string `json:"enroll_token,omitempty"`
+	TokenFile         string `json:"token_file"`
+}
+
 type Config struct {
 	ID                string            `json:"id"`
 	Name              string            `json:"name"`
-	Manager           string            `json:"manager_url"`
+	Manager           string            `json:"manager_url,omitempty"`
 	CAFile            string            `json:"ca_file,omitempty"`
 	AllowInsecureHTTP bool              `json:"allow_insecure_http,omitempty"`
 	EnrollToken       string            `json:"enroll_token,omitempty"`
-	TokenFile         string            `json:"token_file"`
+	TokenFile         string            `json:"token_file,omitempty"`
+	Managers          []ManagerTarget   `json:"managers,omitempty"`
 	Endpoints         []model.Endpoint  `json:"endpoints"`
 	Commands          []Command         `json:"commands"`
 	Services          []ExternalService `json:"services,omitempty"`
+}
+
+// EffectiveManagers returns all configured manager targets in deterministic
+// order, combining the primary manager_url field (if set) with managers[].
+func (c Config) EffectiveManagers() []ManagerTarget {
+	out := make([]ManagerTarget, 0, 1+len(c.Managers))
+	if strings.TrimSpace(c.Manager) != "" || strings.TrimSpace(c.TokenFile) != "" {
+		out = append(out, ManagerTarget{
+			URL:               strings.TrimRight(strings.TrimSpace(c.Manager), "/"),
+			CAFile:            c.CAFile,
+			AllowInsecureHTTP: c.AllowInsecureHTTP,
+			EnrollToken:       c.EnrollToken,
+			TokenFile:         c.TokenFile,
+		})
+	}
+	for _, m := range c.Managers {
+		m.URL = strings.TrimRight(strings.TrimSpace(m.URL), "/")
+		if c.AllowInsecureHTTP {
+			m.AllowInsecureHTTP = true
+		}
+		out = append(out, m)
+	}
+	return out
 }
 
 // InitOptions describes a new node. Core binaries are installed separately and
@@ -91,19 +126,25 @@ func (c Config) Validate() error {
 	if c.ID == "" || c.Name == "" {
 		return errors.New("config id and name are required")
 	}
-	u, err := url.Parse(c.Manager)
-	if err != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
-		return errors.New("manager must be an http(s) origin without credentials, path, query or fragment")
+	targets := c.EffectiveManagers()
+	if len(targets) == 0 || len(targets) > 16 {
+		return errors.New("between 1 and 16 managers are required")
 	}
-	if u.Scheme == "http" {
-		host := u.Hostname()
-		ip := net.ParseIP(host)
-		if !c.AllowInsecureHTTP || host != "localhost" && (ip == nil || !ip.IsLoopback()) {
-			return errors.New("manager requires HTTPS; HTTP is only allowed for loopback development with allow_insecure_http")
+	seenManagers := make(map[string]bool, len(targets))
+	seenTokens := make(map[string]bool, len(targets))
+	for _, target := range targets {
+		if err := validateManagerTarget(target); err != nil {
+			return err
 		}
-	}
-	if !filepath.IsAbs(c.TokenFile) {
-		return errors.New("token_file must be an absolute path")
+		if seenManagers[target.URL] {
+			return fmt.Errorf("duplicate manager URL %q", target.URL)
+		}
+		seenManagers[target.URL] = true
+		cleanToken := filepath.Clean(target.TokenFile)
+		if seenTokens[cleanToken] {
+			return fmt.Errorf("duplicate manager token_file %q", target.TokenFile)
+		}
+		seenTokens[cleanToken] = true
 	}
 	seen := make(map[string]bool)
 	for _, endpoint := range c.Endpoints {
@@ -150,6 +191,24 @@ func validUnitName(unit string) bool {
 		}
 	}
 	return true
+}
+
+func validateManagerTarget(target ManagerTarget) error {
+	u, err := url.Parse(target.URL)
+	if err != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
+		return errors.New("manager must be an http(s) origin without credentials, path, query or fragment")
+	}
+	if u.Scheme == "http" {
+		host := u.Hostname()
+		ip := net.ParseIP(host)
+		if !target.AllowInsecureHTTP || host != "localhost" && (ip == nil || !ip.IsLoopback()) {
+			return errors.New("manager requires HTTPS; HTTP is only allowed for loopback development with allow_insecure_http")
+		}
+	}
+	if !filepath.IsAbs(target.TokenFile) {
+		return errors.New("token_file must be an absolute path")
+	}
+	return nil
 }
 
 func validateHost(host string) error {

@@ -8,7 +8,15 @@ import (
 )
 
 func TestHelp(t *testing.T) {
-	for _, args := range [][]string{{"--help"}, {"init", "--help"}, {"adopt", "--help"}, {"run", "--help"}} {
+	for _, args := range [][]string{
+		{"--help"},
+		{"init", "--help"},
+		{"adopt", "--help"},
+		{"add-manager", "--help"},
+		{"remove-manager", "--help"},
+		{"list-managers", "--help"},
+		{"run", "--help"},
+	} {
 		var output bytes.Buffer
 		if err := execute(context.Background(), args, &output); err != nil {
 			t.Fatal(err)

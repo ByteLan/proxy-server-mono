@@ -486,3 +486,133 @@ func TestRunnerReportsAdoptedServiceStatusesInHeartbeat(t *testing.T) {
 	cancel()
 	finish(t, result)
 }
+
+func TestMultiManagerConcurrentEnrollmentAndLifecycle(t *testing.T) {
+	// Manager 1: primary manager using ENROLL_TOKEN environment variable + TLS CA 1
+	reports1 := make(chan model.HeartbeatRequest, 16)
+	mgr1 := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/agent/register":
+			if r.Header.Get("Authorization") != "Bearer enroll-mgr-1-secret-token-123456" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"token":"node-token-from-mgr1"}`))
+		case "/api/agent/heartbeat":
+			if r.Header.Get("Authorization") != "Bearer node-token-from-mgr1" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			var req model.HeartbeatRequest
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			reports1 <- req
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer mgr1.Close()
+
+	// Manager 2: secondary manager added via AddManager with its own enroll token + TLS CA 2
+	reports2 := make(chan model.HeartbeatRequest, 16)
+	mgr2 := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/agent/register":
+			if r.Header.Get("Authorization") != "Bearer enroll-mgr-2-secret-token-654321" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"token":"node-token-from-mgr2"}`))
+		case "/api/agent/heartbeat":
+			if r.Header.Get("Authorization") != "Bearer node-token-from-mgr2" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			var req model.HeartbeatRequest
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			reports2 <- req
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer mgr2.Close()
+
+	dir := t.TempDir()
+	ca1Path := filepath.Join(dir, "ca1.pem")
+	ca2Path := filepath.Join(dir, "ca2.pem")
+	_ = os.WriteFile(ca1Path, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: mgr1.Certificate().Raw}), 0600)
+	_ = os.WriteFile(ca2Path, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: mgr2.Certificate().Raw}), 0600)
+
+	configPath := filepath.Join(dir, "config.json")
+	if _, err := Init(InitOptions{
+		ConfigPath: configPath,
+		Server:     "203.0.113.35",
+		Name:       "sg01",
+		Manager:    mgr1.URL,
+		CAFile:     ca1Path,
+		HY2Port:    8443,
+		VLESSPort:  9443,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Disable child process spawning in unit test
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Commands = nil
+	saveConfig(t, configPath, cfg)
+
+	// Add second manager using AddManager while ENROLL_TOKEN holds mgr2's key
+	t.Setenv("ENROLL_TOKEN", "enroll-mgr-2-secret-token-654321")
+	updated, err := AddManager(AddManagerOptions{
+		ConfigPath: configPath,
+		Manager:    mgr2.URL,
+		CAFile:     ca2Path,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(updated.EffectiveManagers()) != 2 {
+		t.Fatalf("expected 2 managers, got %d", len(updated.EffectiveManagers()))
+	}
+	// Duplicate manager must be rejected
+	if _, err := AddManager(AddManagerOptions{ConfigPath: configPath, Manager: mgr2.URL}); err == nil {
+		t.Fatal("duplicate manager URL was accepted")
+	}
+
+	// Simulate node.env still holding mgr1's ENROLL_TOKEN at runtime!
+	// mgr1 uses ENROLL_TOKEN from env, while mgr2 uses its own stored EnrollToken without collision.
+	t.Setenv("ENROLL_TOKEN", "enroll-mgr-1-secret-token-123456")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	runner := Runner{HeartbeatInterval: 20 * time.Millisecond}
+	go func() { done <- runner.Run(ctx, configPath) }()
+
+	hb1 := heartbeat(t, reports1)
+	hb2 := heartbeat(t, reports2)
+	if hb1.ID != cfg.ID || hb2.ID != cfg.ID || hb1.Endpoints == nil || hb2.Endpoints == nil {
+		t.Fatalf("both managers must receive initial registration and endpoint heartbeats: %+v / %+v", hb1, hb2)
+	}
+	cancel()
+	finish(t, done)
+
+	statuses, err := ListManagers(configPath)
+	if err != nil || len(statuses) != 2 || !statuses[0].Enrolled || !statuses[1].Enrolled {
+		t.Fatalf("expected both managers enrolled, got %+v (err=%v)", statuses, err)
+	}
+
+	afterRemove, err := RemoveManager(configPath, mgr2.URL)
+	if err != nil || len(afterRemove.EffectiveManagers()) != 1 {
+		t.Fatalf("RemoveManager failed: %+v (err=%v)", afterRemove, err)
+	}
+	if _, err := RemoveManager(configPath, mgr1.URL); err == nil {
+		t.Fatal("RemoveManager allowed removing the last remaining manager")
+	}
+}

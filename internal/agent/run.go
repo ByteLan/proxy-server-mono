@@ -16,6 +16,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"proxy-mono/internal/model"
@@ -34,39 +35,57 @@ type Runner struct {
 
 func Run(ctx context.Context, configPath string) error { return (&Runner{}).Run(ctx, configPath) }
 
+type preparedTarget struct {
+	target      ManagerTarget
+	token       string
+	enrollToken string
+	client      *http.Client
+}
+
 func (r *Runner) Run(ctx context.Context, configPath string) error {
 	cfg, err := LoadConfig(configPath)
 	if err != nil {
 		return err
 	}
-	token, err := readToken(cfg.TokenFile)
-	if err != nil {
-		return err
+	targets := cfg.EffectiveManagers()
+	envEnroll := os.Getenv("ENROLL_TOKEN")
+	if envEnroll == "" {
+		envEnroll = os.Getenv("PROXY_ENROLL_TOKEN")
 	}
-	enrollToken := os.Getenv("ENROLL_TOKEN")
-	if enrollToken == "" {
-		enrollToken = os.Getenv("PROXY_ENROLL_TOKEN")
-	}
-	if enrollToken == "" {
-		enrollToken = cfg.EnrollToken
-	}
-	if token == "" && !validToken(enrollToken) {
-		return errors.New("initial enrollment requires ENROLL_TOKEN or config enroll_token")
-	}
-	client := r.HTTPClient
-	if client == nil {
-		client, err = newHTTPClient(cfg.CAFile)
+	prepared := make([]preparedTarget, 0, len(targets))
+	for _, target := range targets {
+		token, err := readToken(target.TokenFile)
 		if err != nil {
 			return err
 		}
+		enrollToken := target.EnrollToken
+		if enrollToken == "" {
+			enrollToken = envEnroll
+		}
+		if token == "" && !validToken(enrollToken) {
+			return fmt.Errorf("initial enrollment for %s requires ENROLL_TOKEN or config enroll_token", target.URL)
+		}
+		client := r.HTTPClient
+		if client == nil {
+			client, err = newHTTPClient(target.CAFile)
+			if err != nil {
+				return err
+			}
+		}
+		// Never follow redirects carrying an enrollment key or a node token.
+		copyClient := *client
+		copyClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		if copyClient.Timeout == 0 {
+			copyClient.Timeout = 15 * time.Second
+		}
+		prepared = append(prepared, preparedTarget{
+			target:      target,
+			token:       token,
+			enrollToken: enrollToken,
+			client:      &copyClient,
+		})
 	}
-	// Never follow redirects carrying an enrollment key or a node token.
-	copyClient := *client
-	copyClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	if copyClient.Timeout == 0 {
-		copyClient.Timeout = 15 * time.Second
-	}
-	client = &copyClient
+
 	interval := r.HeartbeatInterval
 	if interval <= 0 {
 		interval = 30 * time.Second
@@ -81,65 +100,135 @@ func (r *Runner) Run(ctx context.Context, configPath string) error {
 	if maximum < minimum {
 		maximum = minimum
 	}
-	backoff := minimum
-	coreContext, stopCores := context.WithCancel(ctx)
+
+	runCtx, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
+	coreContext, stopCores := context.WithCancel(runCtx)
 	supervisor := newSupervisor(coreContext, cfg.Commands)
 	defer func() { stopCores(); supervisor.wait() }()
+
+	var stateMu sync.Mutex
+	curEndpoints := append([]model.Endpoint(nil), cfg.Endpoints...)
+	curServices := append([]ExternalService(nil), cfg.Services...)
+
+	snapshot := func(loopCtx context.Context) ([]model.Endpoint, []model.CoreStatus) {
+		stateMu.Lock()
+		// Reload connection material without sending unchanged secrets every 30s.
+		// Identity, manager list and process commands require a restart.
+		if next, loadErr := LoadConfig(configPath); loadErr != nil {
+			r.log("config reload failed; retaining last valid configuration")
+		} else if next.ID != cfg.ID {
+			r.log("identity changed; restart agent to apply configuration")
+		} else {
+			if !sameManagerTargets(next.EffectiveManagers(), targets) {
+				r.log("manager list changed; restart agent to apply configuration")
+			}
+			curEndpoints = append([]model.Endpoint(nil), next.Endpoints...)
+			if len(cfg.Commands)+len(next.Services) <= 8 {
+				curServices = append([]ExternalService(nil), next.Services...)
+			}
+		}
+		eps := append([]model.Endpoint(nil), curEndpoints...)
+		svcs := append([]ExternalService(nil), curServices...)
+		stateMu.Unlock()
+
+		cores := supervisor.status()
+		probe := r.ServiceProbe
+		if probe == nil {
+			probe = probeSystemdService
+		}
+		for _, svc := range svcs {
+			running, msg := probe(loopCtx, svc.Unit)
+			cores = append(cores, model.CoreStatus{Name: svc.Name, Running: running, Error: msg})
+		}
+		return eps, cores
+	}
+
+	if len(prepared) == 1 {
+		return r.runTarget(runCtx, cfg.ID, cfg.Name, prepared[0], interval, minimum, maximum, snapshot)
+	}
+
+	errCh := make(chan error, len(prepared))
+	for _, item := range prepared {
+		item := item
+		go func() {
+			err := r.runTarget(runCtx, cfg.ID, cfg.Name, item, interval, minimum, maximum, snapshot)
+			if err != nil && runCtx.Err() == nil {
+				r.log("manager %s stopped: %v", item.target.URL, err)
+			}
+			errCh <- err
+		}()
+	}
+
+	var lastErr error
+	for range prepared {
+		if err := <-errCh; err != nil {
+			lastErr = err
+		}
+	}
+	if ctx.Err() != nil {
+		return nil
+	}
+	return lastErr
+}
+
+func sameManagerTargets(a, b []ManagerTarget) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].URL != b[i].URL || a[i].TokenFile != b[i].TokenFile || a[i].CAFile != b[i].CAFile {
+			return false
+		}
+	}
+	return true
+}
+
+func (r *Runner) runTarget(
+	ctx context.Context,
+	nodeID, nodeName string,
+	p preparedTarget,
+	interval, minimum, maximum time.Duration,
+	snapshot func(context.Context) ([]model.Endpoint, []model.CoreStatus),
+) error {
+	token := p.token
+	backoff := minimum
 	lastHash := ""
 	for {
 		if ctx.Err() != nil {
 			return nil
 		}
-		// Reload connection material without sending unchanged secrets every 30s.
-		// Identity, manager transport and process commands require a restart.
-		if next, loadErr := LoadConfig(configPath); loadErr != nil {
-			r.log("config reload failed; retaining last valid configuration")
-		} else if next.ID != cfg.ID || next.Manager != cfg.Manager || next.TokenFile != cfg.TokenFile {
-			r.log("identity or manager changed; restart agent to apply configuration")
-		} else {
-			cfg.Endpoints = next.Endpoints
-			if len(cfg.Commands)+len(next.Services) <= 8 {
-				cfg.Services = next.Services
-			}
-		}
+		endpoints, cores := snapshot(ctx)
+		var err error
 		if token == "" {
 			var response struct {
 				Token string `json:"token"`
 			}
-			err = post(ctx, client, cfg.Manager+"/api/agent/register", enrollToken, model.RegisterRequest{
-				ID: cfg.ID, Name: cfg.Name, OS: runtime.GOOS, Arch: runtime.GOARCH, Version: Version, Endpoints: cfg.Endpoints,
+			err = post(ctx, p.client, p.target.URL+"/api/agent/register", p.enrollToken, model.RegisterRequest{
+				ID: nodeID, Name: nodeName, OS: runtime.GOOS, Arch: runtime.GOARCH, Version: Version, Endpoints: endpoints,
 			}, &response)
 			if err == nil {
 				if !validToken(response.Token) {
-					return errors.New("manager returned an invalid node token")
+					return fmt.Errorf("manager %s returned an invalid node token", p.target.URL)
 				}
-				if err := atomicWrite(cfg.TokenFile, []byte(response.Token+"\n")); err != nil {
-					return fmt.Errorf("persist node token: %w", err)
+				if err := atomicWrite(p.target.TokenFile, []byte(response.Token+"\n")); err != nil {
+					return fmt.Errorf("persist node token for %s: %w", p.target.URL, err)
 				}
 				token = response.Token
 			}
 			var status *httpStatusError
 			if errors.As(err, &status) && (status.Status == http.StatusUnauthorized || status.Status == http.StatusForbidden || status.Status == http.StatusConflict) {
-				return fmt.Errorf("enrollment refused (HTTP %d); verify enrollment key or use a new node identity", status.Status)
+				return fmt.Errorf("enrollment refused by %s (HTTP %d); verify enrollment key or use a new node identity", p.target.URL, status.Status)
 			}
 		}
 		if token != "" {
-			hash := endpointsHash(cfg.Endpoints)
-			cores := supervisor.status()
-			probe := r.ServiceProbe
-			if probe == nil {
-				probe = probeSystemdService
-			}
-			for _, svc := range cfg.Services {
-				running, msg := probe(ctx, svc.Unit)
-				cores = append(cores, model.CoreStatus{Name: svc.Name, Running: running, Error: msg})
-			}
-			request := model.HeartbeatRequest{ID: cfg.ID, Version: Version, ConfigHash: hash, Cores: cores}
+			hash := endpointsHash(endpoints)
+			request := model.HeartbeatRequest{ID: nodeID, Version: Version, ConfigHash: hash, Cores: cores}
 			if hash != lastHash {
-				endpoints := cfg.Endpoints
-				request.Endpoints = &endpoints
+				epsCopy := endpoints
+				request.Endpoints = &epsCopy
 			}
-			err = post(ctx, client, cfg.Manager+"/api/agent/heartbeat", token, request, nil)
+			err = post(ctx, p.client, p.target.URL+"/api/agent/heartbeat", token, request, nil)
 			if err == nil {
 				lastHash = hash
 			}
@@ -153,9 +242,9 @@ func (r *Runner) Run(ctx context.Context, configPath string) error {
 		if err != nil {
 			var status *httpStatusError
 			if errors.As(err, &status) {
-				r.log("manager request failed (HTTP %d); node token will not be replaced automatically", status.Status)
+				r.log("manager %s request failed (HTTP %d); node token will not be replaced automatically", p.target.URL, status.Status)
 			} else {
-				r.log("manager unavailable; proxy cores continue running")
+				r.log("manager %s unavailable; proxy cores continue running", p.target.URL)
 			}
 			delay = time.Duration(float64(backoff) * (0.75 + rand.Float64()*0.5))
 			if backoff < maximum {

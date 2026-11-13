@@ -42,7 +42,7 @@ description: 从 GitHub Release 下载、初始化或手动更新本仓库 Go �
    若自行构建（Go1.25+，见 README）或已经备好源码相对目录，也可直接调用 `scripts/install-proxy-server.sh --binary ./bin/proxy-server ...`（同样支持 `--adopt-existing` 或完整双核心参数）。
 
 4. 脚本校验两个 hash，安装到 `/opt/proxy-server/bin`，生成 `/etc/proxy-server/config.json` 与 `config.d`，再以受限系统用户启动。443 UDP 与 443 TCP 可共存但需确认无占用。配置与 token 是私密运行数据，不能提交到仓库；REALITY/TLS 私钥只在节点保存。
-5. 首次注册以 ENROLL_TOKEN 换取节点自己的 token（0600本地文件）；后续心跳使用节点 token。检查管理 UI 中节点 ID、公布地址、两个核心与最近心跳，再用 mihomo 客户端通过每个协议实际访问测试目标。不能用单纯的服务器 curl、端口监听或 agent 在线代替协议验证。
+5. 首次注册以 ENROLL_TOKEN 换取节点自己的 token（0600本地文件）；后续心跳使用节点 token。若需让同一节点同时连接多个管理端，运行 `sudo --preserve-env=ENROLL_TOKEN /opt/proxy-server/bin/proxy-server add-manager --config /etc/proxy-server/config.json --manager https://second-manager.example.com [--ca-file PATH]` 并 `systemctl restart proxy-server`（可用 `list-managers` / `remove-manager` 查看或移除）。检查管理 UI 中节点 ID、公布地址、两个核心与最近心跳，再用 mihomo 客户端通过每个协议实际访问测试目标。不能用单纯的服务器 curl、端口监听或 agent 在线代替协议验证。
 
 升级保留节点配置和 token。传新 manager/name/server 参数不会覆盖旧配置；需要变更时停服后明确编辑配置并核对对应核心配置。不要克隆已初始化目录给第二个节点，也不要删除 token 后复用旧 ID 注册。
 

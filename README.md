@@ -141,6 +141,24 @@ sudo bash ./scripts/install.sh manager \
   unset ENROLL_TOKEN
   ```
 
+- **单节点同时接入多个管理端（`add-manager` / `list-managers` / `remove-manager`）**
+  一台 `proxy-server` 支持同时向多个独立的 `proxy-manage-server` 注册并发送心跳（各自独立保存节点 Token 与可选 CA 证书，互不影响）。后续在其他服务器额外部署管理端后，只需在节点机上追加即可：
+
+  ```bash
+  # 追加第二个管理端（若新管理端使用自签证书，附加 --ca-file /path/to/new-ca.pem）
+  read -r -s -p 'New manager enrollment key: ' ENROLL_TOKEN && printf '\n'
+  export ENROLL_TOKEN
+  sudo --preserve-env=ENROLL_TOKEN /opt/proxy-server/bin/proxy-server add-manager \
+    --config /etc/proxy-server/config.json \
+    --manager https://manager2.example.com
+  unset ENROLL_TOKEN
+  sudo systemctl restart proxy-server
+
+  # 查看已配置的全部管理端状态 / 移除指定管理端
+  sudo /opt/proxy-server/bin/proxy-server list-managers --config /etc/proxy-server/config.json
+  sudo /opt/proxy-server/bin/proxy-server remove-manager --config /etc/proxy-server/config.json --manager https://manager2.example.com
+  ```
+
 ---
 
 ## Server 端免编译更新与回退

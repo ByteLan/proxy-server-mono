@@ -96,6 +96,22 @@ sudo --preserve-env=ENROLL_TOKEN bash scripts/install-proxy-server.sh \
 - `proxy-server adopt` 默认读取 `/etc/hysteria/config.yaml`（提取密码、监听端口、证书 SHA-256 指纹与 SNI）与 `/etc/xray/config.json`（支持 JSONC 注释，提取 `vless`+REALITY 公钥、`socks`、`http`、`http`+TLS 入站），私钥始终不写入 `/etc/proxy-server/config.json`。自定义路径或服务名可通过 `--hysteria-config`、`--hysteria-unit`、`--xray-config`、`--xray-unit` 指定。
 - 运行时 `proxy-server` 不拉起子进程，而是通过 `systemctl is-active` 探测被收编的 systemd 单元状态并随心跳上报；后续重启或升级 `proxy-server` **不会中断**原有的代理连接。
 
+### 多管理端同时接入（Multi-Manager）
+
+单个 `proxy-server` 节点可同时上报至多个独立的 `proxy-manage-server`（上限 16 个），每个管理端拥有独立的注册凭据、持久化节点 Token（`config.d/manager_<hash>.token`）及可选 TLS CA 证书：
+
+```bash
+read -r -s -p 'New manager enrollment key: ' ENROLL_TOKEN && printf '\n'
+export ENROLL_TOKEN
+sudo --preserve-env=ENROLL_TOKEN /opt/proxy-server/bin/proxy-server add-manager \
+  --config /etc/proxy-server/config.json \
+  --manager https://manager2.example.com [--ca-file /path/to/ca.pem]
+unset ENROLL_TOKEN
+sudo systemctl restart proxy-server
+```
+
+可用 `list-managers` 查看各管理端注册状态，或用 `remove-manager --manager URL` 移除不再使用的管理端（保留至少 1 个管理端）。其中一个管理端不可达或鉴权失败不会阻塞其余正常管理端的心跳。
+
 ### 方案 B：纯新机器统一安装托管（默认模式）
 
 从各核心的官方 release 选择固定版本和正确 Linux 架构，下载并解包可执行文件，在可信渠道取得对应 SHA256。不要用 `latest`；不要只用对刚下载文件现算的 hash 替代对发布者预期 hash 的验证。Hysteria 与 Xray 版本及客户端版本需要一起做协议连通测试；版本记录不等同于已验证兼容性。
