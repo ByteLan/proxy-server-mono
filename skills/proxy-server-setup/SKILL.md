@@ -14,7 +14,7 @@ description: >-
 
 本目录保留原始单机协议部署参考。产品化部署先读仓库 [AGENTS.md](../../AGENTS.md)：集群实战排障与存量收编判定使用 [proxy-cluster-ops](../proxy-cluster-ops/SKILL.md)，代理节点安装使用 [install-proxy-server](../install-proxy-server/SKILL.md)，控制面安装使用 [install-proxy-manage-server](../install-proxy-manage-server/SKILL.md)。管理端只有 Hertz / SQLite / 嵌入前端，不能在上面执行下面的代理核心安装步骤。
 
-节点 Agent 自动初始化 Hysteria2 和 VLESS+REALITY，负责管理两个独立核心进程并定期注册/心跳；SOCKS5 / HTTP / HTTPS 保留为手工扩展参考，默认不会部署。旧模板是单机静态模板，中心实际通过结构化模型按订阅当前选择动态生成 mihomo YAML，不直接执行整份模板的占位符替换。
+节点 Agent（`proxy-server init`）默认自动初始化 `Hysteria2`、`VLESS+REALITY`、`SOCKS5`、`HTTP`、`HTTPS` 共 5 种协议（其中后四者共用单个 Xray 子进程，可通过传 `0` 单独关闭），负责守护两个核心子进程并定期向管理端注册/心跳。旧模板是单机静态模板，中心实际通过结构化模型按订阅当前选择动态生成 mihomo YAML，不直接执行整份模板的占位符替换。
 
 下文历史步骤中的“下载最新版本”、`skip-cert-verify`、固定 DNS/规则及 fake-ip 参数，不是产品化默认：安装核心须固定版本并核验可信 SHA256；产品的 Hysteria2 使用证书指纹固定；管理平面 HTTPS 始终验证服务端证书。1 核 / 1 GiB 为产品部署目标，尚未实测容量或长期资源消耗。公网端口监听和本机 curl 只能证明局部运行，最终必须做客户端协议链路验证。
 

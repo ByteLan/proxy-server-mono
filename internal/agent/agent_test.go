@@ -103,6 +103,50 @@ func TestInitGeneratesUsableClientMaterialWithoutServerPrivateKeys(t *testing.T)
 	}
 }
 
+func TestInitWithExtraXrayProxyInbounds(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "node.json")
+	cfg, err := Init(InitOptions{
+		ConfigPath: path, Name: "US", Server: "203.0.113.9", Manager: "https://manager.example",
+		HY2Port: 443, VLESSPort: 443, SOCKS5Port: 1080, HTTPPort: 8080, HTTPSPort: 8443,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Endpoints) != 5 {
+		t.Fatalf("expected 5 endpoints, got %d", len(cfg.Endpoints))
+	}
+	if err := clash.Validate(cfg.Endpoints); err != nil {
+		t.Fatalf("clash validate failed: %v", err)
+	}
+	if _, err := clash.Render([]model.Node{{ID: cfg.ID, Name: cfg.Name, Enabled: true, Endpoints: cfg.Endpoints}}, nil); err != nil {
+		t.Fatalf("clash render failed: %v", err)
+	}
+	state := filepath.Join(filepath.Dir(path), "node.d")
+	xrayBytes, err := os.ReadFile(filepath.Join(state, "xray.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var xr struct {
+		Inbounds []struct {
+			Tag      string `json:"tag"`
+			Port     int    `json:"port"`
+			Protocol string `json:"protocol"`
+		} `json:"inbounds"`
+	}
+	if err := json.Unmarshal(xrayBytes, &xr); err != nil {
+		t.Fatal(err)
+	}
+	if len(xr.Inbounds) != 4 {
+		t.Fatalf("expected 4 Xray inbounds, got %d", len(xr.Inbounds))
+	}
+	if _, err := Init(InitOptions{
+		ConfigPath: filepath.Join(t.TempDir(), "dup.json"), Name: "DUP", Server: "203.0.113.9", Manager: "https://manager.example",
+		HY2Port: 443, VLESSPort: 443, SOCKS5Port: 8080, HTTPPort: 8080,
+	}); err == nil {
+		t.Fatal("expected duplicate TCP port error")
+	}
+}
+
 func testConfig(t *testing.T, manager string) (string, Config) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "node.json")

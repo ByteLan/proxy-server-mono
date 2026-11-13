@@ -65,7 +65,7 @@ iptables -t nat -S PREROUTING 2>/dev/null || true
 - **判定为方案 A（`--adopt-existing` 无感收编）**：`hysteria.service` 或 `xray.service` 已存在并正在运行（例如此前按 `proxy-server-setup` 手工搭建，含单端口或多端口入站 `hysteria2` / `vless` REALITY / `socks5` / `http` / `https`）。
   - 直接使用 `install.sh node -- --adopt-existing ...`：**不覆盖内核二进制、不改端口与密码、不重启内核、不中断现有客户端连接**。
   - 注意：若 `iptables -t nat` 存在 UDP 端口跳跃（如 `50000:55000 -> 24443`），`adopt` 会提取主监听端口（如 `24443`），原有跳跃规则继续生效不受影响。
-- **判定为方案 B（全新托管安装）**：机器上无任何运行中的代理内核服务。需先准备固定版本的官方 `hysteria` 与 `xray` 二进制及可信 SHA256，再运行默认安装流程。
+- **判定为方案 B（全新全协议托管安装）**：机器上无任何运行中的代理内核服务。需先开启 `fq + bbr`、准备固定版本的官方 `hysteria` 与 `xray` 二进制及可信 SHA256，再运行默认安装流程（一次性初始化 `Hysteria2 :443/udp`、`VLESS+REALITY :443/tcp`、`SOCKS5 :1080/tcp+udp`、`HTTP :8080/tcp`、`HTTPS :8443/tcp` 五种协议，并在云防火墙同步放行上述端口）。
 
 ---
 
@@ -125,7 +125,8 @@ sudo bash ./install.sh manager -- \
 部署完成后，在管理端与各节点机显式确认开机自启（`enabled`）与运行态（`active`）：
 
 - **管理端主机**：`proxy-manage-server.service`
-- **收编模式节点机**：`proxy-server.service`、`hysteria.service`、`xray.service` 以及 `proxy-server-recover-hysteria-service.path`、`proxy-server-recover-xray-service.path`
+- **托管模式节点机（方案 B）**：`proxy-server.service`（开机启动后由内置 `supervisor` 直接拉起并守护 `hysteria` 与多入站 `xray` 两个核心子进程，`HY2 / VLESS / SOCKS5 / HTTP / HTTPS` 全部随 `proxy-server.service` 自动启动，任一子进程异常退出按指数退避最多自动重启 10 次）
+- **收编模式节点机（方案 A）**：`proxy-server.service`、`hysteria.service`、`xray.service` 以及 `proxy-server-recover-hysteria-service.path`、`proxy-server-recover-xray-service.path`
 
 ### 4.2 为什么用 `Wants=` + `After=`，严禁用 `Requires=` / `BindsTo=`
 

@@ -26,9 +26,12 @@ export interface OnboardingForm {
   hysteriaUnit: string;
   xrayConfig: string;
   xrayUnit: string;
-  // 方案 B：纯新机器核心与端口参数
+  // 方案 B：纯新机器核心与全协议端口参数（额外协议填 0 可单独关闭）
   hy2Port: string;
   vlessPort: string;
+  socks5Port: string;
+  httpPort: string;
+  httpsPort: string;
   hysteriaVersion: string;
   xrayVersion: string;
 }
@@ -96,8 +99,11 @@ export function createInitialOnboardingForm(
     xrayUnit: 'xray.service',
     hy2Port: '443',
     vlessPort: '443',
-    hysteriaVersion: 'v2.6.1',
-    xrayVersion: 'v25.1.30',
+    socks5Port: '1080',
+    httpPort: '8080',
+    httpsPort: '8443',
+    hysteriaVersion: 'v2.13.0',
+    xrayVersion: 'v26.11.9',
   };
 }
 
@@ -159,12 +165,12 @@ export function buildOnboardingSteps(form: OnboardingForm): OnboardingStep[] {
   });
 
   if (form.mode === 'fresh') {
-    const hyVer = form.hysteriaVersion.trim() || 'v2.6.1';
-    const xrayVer = form.xrayVersion.trim() || 'v25.1.30';
+    const hyVer = form.hysteriaVersion.trim() || 'v2.13.0';
+    const xrayVer = form.xrayVersion.trim() || 'v26.11.9';
     steps.push({
       step: seq++,
       title: '开启系统 BBR 与准备官方固定版本双核心（纯新机器）',
-      summary: '启用 fq + bbr 拥塞控制，并从官方渠道下载固定版本的 Hysteria2 与 Xray 可执行文件及官方 SHA256（禁止盲信未校验的 latest）。',
+      summary: '启用 fq + bbr 拥塞控制，并从官方渠道下载固定版本的 Hysteria2 与 Xray 可执行文件及官方 SHA256（禁止盲信未校验的 latest）。Xray 单进程将同时承载 VLESS+REALITY、SOCKS5、HTTP 与 HTTPS 四种入站。',
       code: [
         '# 1. 开启 BBR（幂等写入）',
         "grep -q '^net.ipv4.tcp_congestion_control=bbr' /etc/sysctl.conf || sudo tee -a /etc/sysctl.conf >/dev/null <<'EOF'",
@@ -177,7 +183,7 @@ export function buildOnboardingSteps(form: OnboardingForm): OnboardingStep[] {
         `HYSTERIA_VERSION=${shellQuote(hyVer)}`,
         `XRAY_VERSION=${shellQuote(xrayVer)}`,
         'WORK_CORES=$(mktemp -d /tmp/proxy-cores.XXXXXX)',
-        'curl -fL "https://github.com/apernet/hysteria/releases/download/app%2F${HYSTERIA_VERSION}/hysteria-linux-amd64" -o "$WORK_CORES/hysteria"',
+        'curl -fL "https://github.com/HyNetworks/hysteria/releases/download/app%2F${HYSTERIA_VERSION}/hysteria-linux-amd64" -o "$WORK_CORES/hysteria"',
         'curl -fL "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-linux-64.zip" -o "$WORK_CORES/xray.zip"',
         'python3 -m zipfile -e "$WORK_CORES/xray.zip" "$WORK_CORES/xray-dir"',
         'chmod +x "$WORK_CORES/hysteria" "$WORK_CORES/xray-dir/xray"',
@@ -186,7 +192,7 @@ export function buildOnboardingSteps(form: OnboardingForm): OnboardingStep[] {
         'HYSTERIA_SHA256="<填入官方_HYSTERIA_64位_SHA256>"',
         'XRAY_SHA256="<填入官方_XRAY_64位_SHA256>"',
       ].join('\n'),
-      note: '跨洲高延迟链路下 Hysteria2 (UDP/QUIC) + BBR 能显著提升吞吐，VLESS+REALITY (TCP) 提供 UDP 受限网络兜底。',
+      note: '跨洲高延迟链路下 Hysteria2 (UDP/QUIC) + BBR 能显著提升吞吐；Xray 同时提供 VLESS+REALITY、SOCKS5 (TCP+UDP)、HTTP 与 HTTPS (TLS) 多协议全场景兜底。',
     });
   }
 
@@ -285,10 +291,14 @@ export function buildOnboardingSteps(form: OnboardingForm): OnboardingStep[] {
     } else {
       const hyPort = form.hy2Port.trim() || '443';
       const vlPort = form.vlessPort.trim() || '443';
+      const s5Port = form.socks5Port.trim() === '' ? '1080' : form.socks5Port.trim();
+      const hpPort = form.httpPort.trim() === '' ? '8080' : form.httpPort.trim();
+      const hpsPort = form.httpsPort.trim() === '' ? '8443' : form.httpsPort.trim();
       installCmdLines.push(`  --manager ${shellQuote(managerUrl)} \\`);
       installCmdLines.push(`  --server ${shellQuote(nodeHost)} \\`);
       installCmdLines.push(`  --name ${shellQuote(nodeName)} \\`);
       installCmdLines.push(`  --hy2-port ${shellQuote(hyPort)} --vless-port ${shellQuote(vlPort)} \\`);
+      installCmdLines.push(`  --socks5-port ${shellQuote(s5Port)} --http-port ${shellQuote(hpPort)} --https-port ${shellQuote(hpsPort)} \\`);
       installCmdLines.push('  --hysteria-binary "$WORK_CORES/hysteria" --hysteria-sha256 "$HYSTERIA_SHA256" \\');
       installCmdLines.push('  --core-version "hysteria=$HYSTERIA_VERSION" \\');
       installCmdLines.push('  --xray-binary "$WORK_CORES/xray-dir/xray" --xray-sha256 "$XRAY_SHA256" \\');
@@ -304,10 +314,10 @@ export function buildOnboardingSteps(form: OnboardingForm): OnboardingStep[] {
       step: seq++,
       title: form.mode === 'adopt'
         ? '下载校验 proxy-server 并无感收编存量内核'
-        : '安装 proxy-server 并初始化双协议托管核心',
+        : '安装 proxy-server 并初始化五协议全托管核心（HY2 + VLESS + SOCKS5 + HTTP + HTTPS）',
       summary: form.mode === 'adopt'
         ? '只读导入现有 Hysteria2 / Xray（含 VLESS REALITY / SOCKS5 / HTTP / HTTPS 入站），不覆盖二进制、不改端口密码、不断连：'
-        : '安装 Agent 与双协议核心至 /opt/proxy-server/bin，自动生成节点专属凭据并向管理端完成首次注册：',
+        : '安装 Agent 与双核心至 /opt/proxy-server/bin，自动生成全部 5 种协议独立凭据与证书指纹配置，并向管理端完成首次注册：',
       code: [
         ...getInstallerLines,
         '',
@@ -350,16 +360,21 @@ export function buildOnboardingSteps(form: OnboardingForm): OnboardingStep[] {
   } else {
     steps.push({
       step: seq++,
-      title: '核验 systemd 开机自启与 Agent 运行日志',
-      summary: '确认 proxy-server.service 已开启开机自启且心跳上报正常：',
+      title: '核验 systemd 开机自启、全协议监听与子进程守护',
+      summary: '确认 proxy-server.service 已开启开机自启，且 Hysteria2 与多入站 Xray（VLESS / SOCKS5 / HTTP / HTTPS）子进程全部监听正常：',
       code: [
         'sudo systemctl enable --now proxy-server.service',
         'systemctl is-enabled proxy-server.service && systemctl is-active proxy-server.service',
+        "ss -tulnp | grep -E 'hysteria|xray'",
         'sudo journalctl -u proxy-server -n 25 --no-pager',
       ].join('\n'),
-      note: '子进程托管模式下，任一核心异常退出（存活不足 1 分钟）会按指数退避最多自动重启 10 次，不会拖垮 Agent 主进程。',
+      note: '子进程托管模式下，Hysteria2 与 Xray（含 VLESS、SOCKS5、HTTP、HTTPS 全部入站）均随 proxy-server.service 开机自动拉起，无需单独配置核心 systemd 单元；任一子进程异常退出（存活不足 1 分钟）会按指数退避最多自动重启 10 次。',
     });
   }
+
+  const firewallHint = form.mode === 'fresh'
+    ? `请放行对应代理端口（当前配置：UDP ${form.hy2Port.trim() || '443'}，TCP ${form.vlessPort.trim() || '443'}${form.socks5Port.trim() !== '0' ? `，TCP/UDP ${form.socks5Port.trim() || '1080'}` : ''}${form.httpPort.trim() !== '0' ? `，TCP ${form.httpPort.trim() || '8080'}` : ''}${form.httpsPort.trim() !== '0' ? `，TCP ${form.httpsPort.trim() || '8443'}` : ''}）`
+    : '已放行节点代理全部 UDP/TCP 入站端口';
 
   steps.push({
     step: seq++,
@@ -374,7 +389,7 @@ export function buildOnboardingSteps(form: OnboardingForm): OnboardingStep[] {
       '# 如升级后异常，一键回退上一版二进制（.previous）',
       'sudo systemctl stop proxy-server && sudo cp /opt/proxy-server/bin/proxy-server.previous /opt/proxy-server/bin/proxy-server && sudo systemctl start proxy-server',
     ].join('\n'),
-    note: `最后确认：① 云厂商防火墙（如 GCP Network Tags / 安全组）已放行节点代理 UDP/TCP 端口；② 本控制台「代理节点」列表已出现「${nodeName}」且心跳在线；③ 心跳在线不代表客户端到节点代理端口可达，请添加到「订阅管理」并用客户端实测。`,
+    note: `最后确认：① 云厂商防火墙（如 GCP Network Tags / 安全组）${firewallHint}；② 本控制台「代理节点」列表已出现「${nodeName}」且心跳在线；③ 心跳在线不代表客户端到节点代理端口可达，请添加到「订阅管理」并用客户端实测。`,
   });
 
   return steps;
@@ -389,7 +404,7 @@ export function buildOnboardingMarkdown(form: OnboardingForm, includeSecret: boo
   const modeLabel = form.mode === 'adopt'
     ? '方案 A：存量内核无感收编 (--adopt-existing)'
     : form.mode === 'fresh'
-      ? '方案 B：纯新机器全套部署 (BBR + 固定版本双核 + Agent 托管)'
+      ? '方案 B：纯新机器全套部署 (BBR + 五协议全托管：HY2 / VLESS / SOCKS5 / HTTP / HTTPS)'
       : '场景 C：已有 proxy-server 节点接入新管理端 (add-manager)';
   const channelLabel = form.channel === 'pinned' && form.pinnedVersion.trim()
     ? `固定版本 (${form.pinnedVersion.trim()})`

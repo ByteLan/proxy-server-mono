@@ -9,7 +9,7 @@ Usage (fresh host, managed child cores):
   install-proxy-server.sh --binary PATH --manager URL --server PUBLIC_HOST --name NAME \
     --hysteria-binary PATH --hysteria-sha256 HASH --core-version hysteria=VERSION \
     --xray-binary PATH --xray-sha256 HASH --core-version xray=VERSION \
-    [--hy2-port 443] [--vless-port 443] [--ca-file PATH]
+    [--hy2-port 443] [--vless-port 443] [--socks5-port 1080] [--http-port 8080] [--https-port 8443] [--ca-file PATH]
 
 Usage (existing host cores, companion/adopt mode):
   install-proxy-server.sh --binary PATH --adopt-existing --manager URL --server PUBLIC_HOST --name NAME \
@@ -24,21 +24,24 @@ EOF
 }
 
 binary= manager= server= name= hysteria_binary= hysteria_sha256= xray_binary= xray_sha256= ca_file=
-hysteria_version= xray_version= hy2_port=443 vless_port=443
-adopt_existing=0 hy2_port_set=0 vless_port_set=0
+hysteria_version= xray_version= hy2_port=443 vless_port=443 socks5_port=1080 http_port=8080 https_port=8443
+adopt_existing=0 hy2_port_set=0 vless_port_set=0 extra_port_set=0
 hysteria_config= hysteria_unit= xray_config= xray_unit=
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --adopt-existing)
       adopt_existing=1
       shift ;;
-    --binary|--manager|--server|--name|--hysteria-binary|--hysteria-sha256|--xray-binary|--xray-sha256|--core-version|--hy2-port|--vless-port|--ca-file|--hysteria-config|--hysteria-unit|--xray-config|--xray-unit)
+    --binary|--manager|--server|--name|--hysteria-binary|--hysteria-sha256|--xray-binary|--xray-sha256|--core-version|--hy2-port|--vless-port|--socks5-port|--http-port|--https-port|--ca-file|--hysteria-config|--hysteria-unit|--xray-config|--xray-unit)
       [[ $# -ge 2 ]] || { usage >&2; exit 2; }
       case "$1" in
         --binary) binary=$2 ;; --manager) manager=${2%/} ;; --server) server=$2 ;; --name) name=$2 ;;
         --hysteria-binary) hysteria_binary=$2 ;; --hysteria-sha256) hysteria_sha256=$2 ;;
         --xray-binary) xray_binary=$2 ;; --xray-sha256) xray_sha256=$2 ;;
         --hy2-port) hy2_port=$2; hy2_port_set=1 ;; --vless-port) vless_port=$2; vless_port_set=1 ;;
+        --socks5-port) socks5_port=$2; extra_port_set=1 ;;
+        --http-port) http_port=$2; extra_port_set=1 ;;
+        --https-port) https_port=$2; extra_port_set=1 ;;
         --ca-file) ca_file=$2 ;;
         --hysteria-config) hysteria_config=$2 ;; --hysteria-unit) hysteria_unit=$2 ;;
         --xray-config) xray_config=$2 ;; --xray-unit) xray_unit=$2 ;;
@@ -70,7 +73,7 @@ verify_checksum() {
   [[ $(printf '%s' "$actual" | tr '[:upper:]' '[:lower:]') == $(printf '%s' "$expected" | tr '[:upper:]' '[:lower:]') ]] || { echo "Checksum mismatch: $file" >&2; exit 2; }
 }
 if (( adopt_existing )); then
-  if [[ -n "$hysteria_binary$hysteria_sha256$xray_binary$xray_sha256$hysteria_version$xray_version" ]] || (( hy2_port_set || vless_port_set )); then
+  if [[ -n "$hysteria_binary$hysteria_sha256$xray_binary$xray_sha256$hysteria_version$xray_version" ]] || (( hy2_port_set || vless_port_set || extra_port_set )); then
     echo '--adopt-existing cannot be combined with core binary, checksum, version or port-generation flags.' >&2
     exit 2
   fi
@@ -88,8 +91,14 @@ else
   for port in "$hy2_port" "$vless_port"; do
     [[ "$port" =~ ^[0-9]{1,5}$ ]] && (( 10#$port >= 1 && 10#$port <= 65535 )) || { echo 'Ports must be 1..65535.' >&2; exit 2; }
   done
+  for port in "$socks5_port" "$http_port" "$https_port"; do
+    [[ "$port" =~ ^[0-9]{1,5}$ ]] && (( 10#$port >= 0 && 10#$port <= 65535 )) || { echo 'Optional proxy ports must be 0..65535.' >&2; exit 2; }
+  done
   hy2_port=$((10#$hy2_port))
   vless_port=$((10#$vless_port))
+  socks5_port=$((10#$socks5_port))
+  http_port=$((10#$http_port))
+  https_port=$((10#$https_port))
   for version in "$hysteria_version" "$xray_version"; do
     [[ "$version" =~ ^[vV]?[0-9][A-Za-z0-9._+-]*$ && "$version" != *latest* ]] || { echo 'Choose an explicit fixed version for each core.' >&2; exit 2; }
   done
@@ -226,7 +235,9 @@ if [[ ! -e /etc/proxy-server/config.json ]]; then
       --manager "$manager" --server "$server" --name "$name" "${adopt_args[@]}" "${ca_args[@]}"
   else
     /opt/proxy-server/bin/proxy-server init --config /etc/proxy-server/config.json \
-      --manager "$manager" --server "$server" --name "$name" --hy2-port "$hy2_port" --vless-port "$vless_port" \
+      --manager "$manager" --server "$server" --name "$name" \
+      --hy2-port "$hy2_port" --vless-port "$vless_port" \
+      --socks5-port "$socks5_port" --http-port "$http_port" --https-port "$https_port" \
       --hysteria-bin /opt/proxy-server/bin/hysteria --xray-bin /opt/proxy-server/bin/xray "${ca_args[@]}"
   fi
 else

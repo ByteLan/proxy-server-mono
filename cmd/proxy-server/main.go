@@ -152,6 +152,9 @@ func execute(ctx context.Context, args []string, output io.Writer) error {
 		flags.BoolVar(&options.AllowInsecureHTTP, "allow-insecure-http", false, "allow loopback-only HTTP for local development")
 		flags.IntVar(&options.HY2Port, "hy2-port", 443, "Hysteria2 UDP listen port")
 		flags.IntVar(&options.VLESSPort, "vless-port", 443, "VLESS-REALITY TCP listen port")
+		flags.IntVar(&options.SOCKS5Port, "socks5-port", 1080, "SOCKS5 TCP/UDP listen port (0 disables)")
+		flags.IntVar(&options.HTTPPort, "http-port", 8080, "HTTP proxy TCP listen port (0 disables)")
+		flags.IntVar(&options.HTTPSPort, "https-port", 8443, "HTTPS proxy TLS listen port (0 disables)")
 		flags.StringVar(&options.HysteriaBin, "hysteria-bin", "hysteria", "pinned Hysteria2 executable path")
 		flags.StringVar(&options.XrayBin, "xray-bin", "xray", "pinned Xray executable path compatible with clients")
 		if err := flags.Parse(args[1:]); err != nil {

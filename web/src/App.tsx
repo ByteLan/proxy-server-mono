@@ -207,7 +207,7 @@ function OnboardingGuide({
             onChange={(val) => updateField('mode', val as OnboardingMode)}
             options={[
               { label: '方案 A：存量内核无感收编 (--adopt-existing · 推荐)', value: 'adopt' },
-              { label: '方案 B：纯新机器全套部署 (BBR + 官方双核)', value: 'fresh' },
+              { label: '方案 B：纯新机器全套部署 (BBR + 五协议全托管)', value: 'fresh' },
               { label: '场景 C：已有节点接入本管理端 (add-manager)', value: 'add-manager' },
             ]}
           />
@@ -320,6 +320,18 @@ function OnboardingGuide({
             <div>
               <label className="field-label">VLESS TCP 端口 (--vless-port)</label>
               <Input value={form.vlessPort} onChange={(v) => updateField('vlessPort', v)} />
+            </div>
+            <div>
+              <label className="field-label">SOCKS5 端口 (--socks5-port，0 关闭)</label>
+              <Input value={form.socks5Port} onChange={(v) => updateField('socks5Port', v)} />
+            </div>
+            <div>
+              <label className="field-label">HTTP 端口 (--http-port，0 关闭)</label>
+              <Input value={form.httpPort} onChange={(v) => updateField('httpPort', v)} />
+            </div>
+            <div>
+              <label className="field-label">HTTPS 端口 (--https-port，0 关闭)</label>
+              <Input value={form.httpsPort} onChange={(v) => updateField('httpsPort', v)} />
             </div>
             <div>
               <label className="field-label">Hysteria2 固定版本</label>

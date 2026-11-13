@@ -20,7 +20,7 @@ func TestGeneratedConfigurationWithMihomo(t *testing.T) {
 		t.Skip("optional real-core check: set MIHOMO_TEST_BIN to a verified mihomo binary")
 	}
 	dir := t.TempDir()
-	cfg, err := Init(InitOptions{ConfigPath: filepath.Join(dir, "agent.json"), Server: "127.0.0.1", Name: "local syntax check", Manager: "https://manager.example"})
+	cfg, err := Init(InitOptions{ConfigPath: filepath.Join(dir, "agent.json"), Server: "127.0.0.1", Name: "local syntax check", Manager: "https://manager.example", SOCKS5Port: 1080, HTTPPort: 8080, HTTPSPort: 8443})
 	if err != nil {
 		t.Fatal(err)
 	}

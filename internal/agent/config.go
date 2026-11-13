@@ -103,6 +103,9 @@ type InitOptions struct {
 	EnrollToken       string
 	HY2Port           int
 	VLESSPort         int
+	SOCKS5Port        int
+	HTTPPort          int
+	HTTPSPort         int
 	HysteriaBin       string
 	XrayBin           string
 }
@@ -240,6 +243,24 @@ func Init(options InitOptions) (Config, error) {
 	if options.HY2Port < 1 || options.HY2Port > 65535 || options.VLESSPort < 1 || options.VLESSPort > 65535 {
 		return cfg, errors.New("ports must be between 1 and 65535")
 	}
+	for _, optPort := range []int{options.SOCKS5Port, options.HTTPPort, options.HTTPSPort} {
+		if optPort < 0 || optPort > 65535 {
+			return cfg, errors.New("optional proxy ports must be 0 (disabled) or between 1 and 65535")
+		}
+	}
+	tcpUsed := map[int]bool{options.VLESSPort: true}
+	for _, optPort := range []int{options.SOCKS5Port, options.HTTPPort, options.HTTPSPort} {
+		if optPort == 0 {
+			continue
+		}
+		if tcpUsed[optPort] {
+			return cfg, fmt.Errorf("duplicate TCP listen port %d across Xray inbounds", optPort)
+		}
+		tcpUsed[optPort] = true
+	}
+	if options.SOCKS5Port > 0 && options.SOCKS5Port == options.HY2Port {
+		return cfg, fmt.Errorf("SOCKS5 UDP relay port %d conflicts with Hysteria2 UDP port", options.SOCKS5Port)
+	}
 	if options.HysteriaBin == "" {
 		options.HysteriaBin = "hysteria"
 	}
@@ -272,6 +293,18 @@ func Init(options InitOptions) (Config, error) {
 	if err != nil {
 		return cfg, err
 	}
+	var proxyUser, proxyPass string
+	if options.SOCKS5Port > 0 || options.HTTPPort > 0 || options.HTTPSPort > 0 {
+		uHex, err := randomHex(6)
+		if err != nil {
+			return cfg, err
+		}
+		proxyUser = "u_" + uHex
+		proxyPass, err = randomHex(24)
+		if err != nil {
+			return cfg, err
+		}
+	}
 	realityKey, err := ecdh.X25519().GenerateKey(rand.Reader)
 	if err != nil {
 		return cfg, err
@@ -280,13 +313,32 @@ func Init(options InitOptions) (Config, error) {
 	if err != nil {
 		return cfg, err
 	}
+	endpoints := []model.Endpoint{
+		{ID: "hy2_" + id, Name: options.Name + " HY2", Type: "hysteria2", Server: options.Server, Port: options.HY2Port, Password: password, SNI: options.Server, Fingerprint: fingerprint, TLS: true, UDP: true},
+		{ID: "vless_" + id, Name: options.Name + " REALITY", Type: "vless", Server: options.Server, Port: options.VLESSPort, UUID: uuid, SNI: "www.microsoft.com", PublicKey: base64.RawURLEncoding.EncodeToString(realityKey.PublicKey().Bytes()), ShortID: shortID, TLS: true, UDP: true},
+	}
+	if options.SOCKS5Port > 0 {
+		endpoints = append(endpoints, model.Endpoint{
+			ID: "socks5_" + id, Name: options.Name + " SOCKS5", Type: "socks5", Server: options.Server, Port: options.SOCKS5Port,
+			Username: proxyUser, Password: proxyPass, UDP: true,
+		})
+	}
+	if options.HTTPPort > 0 {
+		endpoints = append(endpoints, model.Endpoint{
+			ID: "http_" + id, Name: options.Name + " HTTP", Type: "http", Server: options.Server, Port: options.HTTPPort,
+			Username: proxyUser, Password: proxyPass,
+		})
+	}
+	if options.HTTPSPort > 0 {
+		endpoints = append(endpoints, model.Endpoint{
+			ID: "https_" + id, Name: options.Name + " HTTPS", Type: "https", Server: options.Server, Port: options.HTTPSPort,
+			Username: proxyUser, Password: proxyPass, TLS: true, SNI: options.Server, Fingerprint: fingerprint,
+		})
+	}
 	cfg = Config{
 		ID: "node_" + id, Name: options.Name, Manager: strings.TrimRight(options.Manager, "/"),
 		EnrollToken: options.EnrollToken, CAFile: options.CAFile, AllowInsecureHTTP: options.AllowInsecureHTTP, TokenFile: filepath.Join(statePath, "agent.token"),
-		Endpoints: []model.Endpoint{
-			{ID: "hy2_" + id, Name: options.Name + " HY2", Type: "hysteria2", Server: options.Server, Port: options.HY2Port, Password: password, SNI: options.Server, Fingerprint: fingerprint, TLS: true, UDP: true},
-			{ID: "vless_" + id, Name: options.Name + " REALITY", Type: "vless", Server: options.Server, Port: options.VLESSPort, UUID: uuid, SNI: "www.microsoft.com", PublicKey: base64.RawURLEncoding.EncodeToString(realityKey.PublicKey().Bytes()), ShortID: shortID, TLS: true, UDP: true},
-		},
+		Endpoints: endpoints,
 		Commands: []Command{
 			{Name: "hysteria", Path: options.HysteriaBin, Args: []string{"server", "-c", filepath.Join(statePath, "hysteria.yaml")}},
 			{Name: "xray", Path: options.XrayBin, Args: []string{"run", "-c", filepath.Join(statePath, "xray.json")}},
@@ -304,16 +356,58 @@ func Init(options InitOptions) (Config, error) {
 		return Config{}, fmt.Errorf("create node state directory: %w", err)
 	}
 	hysteria := fmt.Sprintf("listen: \":%d\"\ntls:\n  cert: %s\n  key: %s\nauth:\n  type: password\n  password: %s\n", options.HY2Port, quote(filepath.Join(statePath, "server.crt")), quote(filepath.Join(statePath, "server.key")), quote(password))
-	xray := map[string]any{
-		"log": map[string]any{"loglevel": "warning"},
-		"inbounds": []any{map[string]any{
-			"tag": "vless-reality", "listen": "0.0.0.0", "port": options.VLESSPort, "protocol": "vless",
-			"settings": map[string]any{"clients": []any{map[string]any{"id": uuid, "flow": "xtls-rprx-vision"}}, "decryption": "none"},
-			"streamSettings": map[string]any{"network": "tcp", "security": "reality", "realitySettings": map[string]any{
-				"show": false, "dest": "www.microsoft.com:443", "xver": 0, "serverNames": []string{"www.microsoft.com"},
-				"privateKey": base64.RawURLEncoding.EncodeToString(realityKey.Bytes()), "shortIds": []string{shortID},
-			}},
+	sniffing := map[string]any{"enabled": true, "destOverride": []string{"http", "tls", "quic"}}
+	inbounds := []any{map[string]any{
+		"tag": "vless-reality", "listen": "0.0.0.0", "port": options.VLESSPort, "protocol": "vless",
+		"settings": map[string]any{"clients": []any{map[string]any{"id": uuid, "flow": "xtls-rprx-vision"}}, "decryption": "none"},
+		"streamSettings": map[string]any{"network": "tcp", "security": "reality", "realitySettings": map[string]any{
+			"show": false, "dest": "www.microsoft.com:443", "xver": 0, "serverNames": []string{"www.microsoft.com"},
+			"privateKey": base64.RawURLEncoding.EncodeToString(realityKey.Bytes()), "shortIds": []string{shortID},
 		}},
+		"sniffing": sniffing,
+	}}
+	if options.SOCKS5Port > 0 {
+		socksSettings := map[string]any{
+			"auth":     "password",
+			"accounts": []any{map[string]any{"user": proxyUser, "pass": proxyPass}},
+			"udp":      true,
+		}
+		if net.ParseIP(options.Server) != nil {
+			socksSettings["ip"] = options.Server
+		}
+		inbounds = append(inbounds, map[string]any{
+			"tag": "socks5", "listen": "0.0.0.0", "port": options.SOCKS5Port, "protocol": "socks",
+			"settings": socksSettings, "sniffing": sniffing,
+		})
+	}
+	if options.HTTPPort > 0 {
+		inbounds = append(inbounds, map[string]any{
+			"tag": "http-proxy", "listen": "0.0.0.0", "port": options.HTTPPort, "protocol": "http",
+			"settings": map[string]any{"accounts": []any{map[string]any{"user": proxyUser, "pass": proxyPass}}},
+			"sniffing": sniffing,
+		})
+	}
+	if options.HTTPSPort > 0 {
+		inbounds = append(inbounds, map[string]any{
+			"tag": "https-proxy", "listen": "0.0.0.0", "port": options.HTTPSPort, "protocol": "http",
+			"settings": map[string]any{"accounts": []any{map[string]any{"user": proxyUser, "pass": proxyPass}}},
+			"sniffing": sniffing,
+			"streamSettings": map[string]any{
+				"network":  "tcp",
+				"security": "tls",
+				"tlsSettings": map[string]any{
+					"alpn": []string{"http/1.1"},
+					"certificates": []any{map[string]any{
+						"certificateFile": filepath.Join(statePath, "server.crt"),
+						"keyFile":         filepath.Join(statePath, "server.key"),
+					}},
+				},
+			},
+		})
+	}
+	xray := map[string]any{
+		"log":       map[string]any{"loglevel": "warning"},
+		"inbounds":  inbounds,
 		"outbounds": []any{map[string]any{"protocol": "freedom", "tag": "direct"}},
 	}
 	xrayJSON, err := json.MarshalIndent(xray, "", "  ")

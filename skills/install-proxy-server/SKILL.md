@@ -26,13 +26,14 @@ description: 从 GitHub Release 下载、初始化或手动更新本仓库 Go �
      ```
      *(非默认配置路径或 systemd unit 可附加 `--hysteria-config`、`--hysteria-unit`、`--xray-config`、`--xray-unit`；公开库无需 `GITHUB_TOKEN`。)*
 
-   - **方案 B：纯新机器（安装固定版本核心并由 Agent 统一托管子进程）**：
-     为 Hysteria2、Xray 分别从官方 release 选择固定版本、正确架构和可信的预期 SHA256；bootstrap 只下载 Agent，不自动下载/升级两个核心。不要使用 `latest` 或仅把下载文件现算出的 hash 视作发布者校验：
+   - **方案 B：纯新机器（安装固定版本核心并由 Agent 统一托管全套五协议子进程）**：
+     为 Hysteria2、Xray 分别从官方 release 选择固定版本、正确架构和可信的预期 SHA256；bootstrap 只下载 Agent，不自动下载/升级两个核心。不要使用 `latest` 或仅把下载文件现算出的 hash 视作发布者校验。默认同时初始化 **5 种协议**：`Hysteria2`（UDP `443`）与共用单个 Xray 子进程的 `VLESS+REALITY`（TCP `443`）、`SOCKS5`（TCP+UDP `1080`）、`HTTP`（TCP `8080`）、`HTTPS`（TLS `8443`，复用节点证书 SHA-256 指纹校验）；若不启用某项额外代理端口可传 `0`：
 
      ```bash
      sudo --preserve-env=GITHUB_TOKEN,ENROLL_TOKEN bash ./install.sh node -- \
        --manager https://manager.example.com --server node01.example.com --name node01 \
        --hy2-port 443 --vless-port 443 \
+       --socks5-port 1080 --http-port 8080 --https-port 8443 \
        --hysteria-binary "$HYSTERIA_BINARY" --hysteria-sha256 "$HYSTERIA_SHA256" \
        --core-version "hysteria=$HYSTERIA_VERSION" \
        --xray-binary "$XRAY_BINARY" --xray-sha256 "$XRAY_SHA256" \
@@ -41,7 +42,7 @@ description: 从 GitHub Release 下载、初始化或手动更新本仓库 Go �
 
    若自行构建（Go1.25+，见 README）或已经备好源码相对目录，也可直接调用 `scripts/install-proxy-server.sh --binary ./bin/proxy-server ...`（同样支持 `--adopt-existing` 或完整双核心参数）。
 
-4. 脚本校验两个 hash，安装到 `/opt/proxy-server/bin`，生成 `/etc/proxy-server/config.json` 与 `config.d`，再以受限系统用户启动。443 UDP 与 443 TCP 可共存但需确认无占用。配置与 token 是私密运行数据，不能提交到仓库；REALITY/TLS 私钥只在节点保存。
+4. 脚本校验两个 hash，安装到 `/opt/proxy-server/bin`，生成 `/etc/proxy-server/config.json` 与 `config.d`，将 `proxy-server.service` 设为开机自启（`systemctl enable`）并以受限系统用户 `proxy-node` 启动。托管模式下 `Hysteria2` 与多入站 `Xray`（`VLESS` / `SOCKS5` / `HTTP` / `HTTPS`）均随 `proxy-server.service` 开机自动拉起并由内置 `supervisor` 守护（异常退出按指数退避最多自动重启 10 次），无需额外配置核心 systemd 单元。确认云安全组已放行对应端口（默认 `tcp:443,udp:443,tcp:1080,udp:1080,tcp:8080,tcp:8443`）。配置与 token 是私密运行数据，不能提交到仓库；REALITY/TLS 私钥只在节点保存。
 5. 首次注册以 ENROLL_TOKEN 换取节点自己的 token（0600本地文件）；后续心跳使用节点 token。若需让同一节点同时连接多个管理端，运行 `sudo --preserve-env=ENROLL_TOKEN /opt/proxy-server/bin/proxy-server add-manager --config /etc/proxy-server/config.json --manager https://second-manager.example.com [--ca-file PATH]` 并 `systemctl restart proxy-server`（可用 `list-managers` / `remove-manager` 查看或移除）。检查管理 UI 中节点 ID、公布地址、两个核心与最近心跳，再用 mihomo 客户端通过每个协议实际访问测试目标。不能用单纯的服务器 curl、端口监听或 agent 在线代替协议验证。
 
 升级保留节点配置和 token。传新 manager/name/server 参数不会覆盖旧配置；需要变更时停服后明确编辑配置并核对对应核心配置。不要克隆已初始化目录给第二个节点，也不要删除 token 后复用旧 ID 注册。
@@ -52,4 +53,4 @@ description: 从 GitHub Release 下载、初始化或手动更新本仓库 Go �
 
 若直接运行，使用 `proxy-server init --config PATH --manager URL --server HOST --name NAME --hysteria-bin PATH --xray-bin PATH`，随后 `ENROLL_TOKEN` 环境下 `proxy-server run --config PATH`。JSON 中连接地址字段是 `manager_url`，可选注册 key 字段是 `enroll_token`；优先使用环境变量。只有本机开发允许 `--manager http://127.0.0.1:8080 --allow-insecure-http`。
 
-可用完整安装参数加 `DESTDIR=/absolute/staging/path` 检查文件/env/unit，但会跳过 init、注册、用户创建与 systemctl；staging 不是已接入的可运行节点。自动初始化只启用 Hysteria2 与 VLESS+REALITY，其他协议需显式手工配置和验证。
+可用完整安装参数加 `DESTDIR=/absolute/staging/path` 检查文件/env/unit，但会跳过 init、注册、用户创建与 systemctl；staging 不是已接入的可运行节点。自动初始化默认启用 `Hysteria2`、`VLESS+REALITY`、`SOCKS5`、`HTTP`、`HTTPS` 共 5 种协议（可将 `--socks5-port` / `--http-port` / `--https-port` 设为 `0` 按需关闭），部署后务必逐协议完成真实代理链路核验。
