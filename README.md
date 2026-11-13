@@ -62,7 +62,7 @@ GOTOOLCHAIN=auto make release
 GOMAXPROCS=1 GOFLAGS="-p=1" GOTOOLCHAIN=auto make build-go
 ```
 
-> Makefile 默认附加 `-tags stdjson,gjson` 构建与测试；手动运行 `go build/test/vet` 时也需带上 `-tags stdjson,gjson`。更多细节见[发布与更新指南](docs/releases.md#维护者手动构建与发布)与[源码构建评估](docs/source-build.md)。
+> Makefile 默认附加 `-tags stdjson,gjson` 构建与测试；手动运行 `go build/test/vet` 时也需带上 `-tags stdjson,gjson`。更多细节见[免编译发布安装与自更新规范](product-spec/发布与安装升级/免编译发布安装与自更新.md)与[源码构建评估归档](docs/2026-11-13-source-build-assessment/assessment.md)。
 
 ---
 
@@ -85,7 +85,7 @@ GOMAXPROCS=1 GOFLAGS="-p=1" GOTOOLCHAIN=auto make build-go
 无论选择哪种方式，执行 `install.sh` 时都会自动从 GitHub Release 下载匹配当前服务器架构的已编译二进制与 `install-bundle.tar.gz`，核验 `SHA256SUMS` 后配置 `systemd` 服务，**全程不在服务器编译**：
 
 - **方式 A（拉取仓库后运行脚本）**：在服务器上 `git clone` 或 `git pull` 仓库后，直接运行仓库内的 `./scripts/install.sh`。
-- **方式 B（免克隆仓库，仅下载单文件 `install.sh`）**：通过 GitHub API 安全拉取 `scripts/install.sh`（具体 `curl` 命令见 [releases.md](docs/releases.md#下载-bootstrap-脚本)）。
+- **方式 B（免克隆仓库，仅下载单文件 `install.sh`）**：公开库直接下载 Release 资产中的 `install.sh`；私库可通过 GitHub Contents API 安全拉取 `scripts/install.sh`（见 [安装管理端技能](skills/install-proxy-manage-server/SKILL.md)）。
 
 `install.sh` 通用语法（`--` 前为下载源参数，`--` 后透传给底层安装器）：
 
@@ -126,7 +126,7 @@ sudo bash ./scripts/install.sh manager \
   *(公开库省略 `--token-file`；若配置文件或 systemd unit 名称非默认，可附加 `--hysteria-config`、`--hysteria-unit`、`--xray-config`、`--xray-unit`。)*
 
 - **方案 B：纯新机器统一安装托管（默认模式）**
-  适用于尚未部署协议内核的全新 VPS。先按[部署指南](docs/deployment.md#代理节点)在节点准备好官方固定版本的 `hysteria` 与 `xray` 二进制及预期 SHA256（安装器不会自动拉取 `latest` 协议核心），然后执行：
+  适用于尚未部署协议内核的全新 VPS。先按[安装代理节点技能](skills/install-proxy-server/SKILL.md)从官方 Release 准备好固定版本的 `hysteria` 与 `xray` 二进制及预期 SHA256（安装器不会自动拉取 `latest` 协议核心），然后执行：
 
   ```bash
   read -r -s -p 'Manager enrollment key: ' ENROLL_TOKEN && printf '\n'
@@ -207,7 +207,7 @@ sudo bash ./scripts/install.sh manager \
 
 ### 3. 二进制快速回退
 
-每次 `update` 成功后均保留上一版可执行文件为 `.previous`（仅回退二进制，不回滚 SQLite 数据迁移；完整备份与恢复规范见 [releases.md](docs/releases.md#升级前备份与二进制回退)）：
+每次 `update` 成功后均保留上一版可执行文件为 `.previous`（仅回退二进制，不回滚 SQLite 数据迁移；升级前备份与回退约束见 [免编译发布安装与自更新规范](product-spec/发布与安装升级/免编译发布安装与自更新.md)）：
 
 ```bash
 sudo systemctl stop proxy-manage-server
@@ -233,9 +233,19 @@ export PUBLIC_URL=http://127.0.0.1:8080
 
 ---
 
-## 订阅分流与节点接入说明
+## 订阅分流与上下文文档资产
 
-详细系统设计见 [架构说明](docs/architecture.md)，接口定义见 [API 契约](docs/api.md)，部署细节见 [部署指南](docs/deployment.md)，验证与资源抽样见 [验证记录](docs/verification.md)。
+仓库按信息生命周期采用三层上下文治理（规范归档见 [上下文工程治理](docs/2026-11-14-context-governance/spec.md)）：
+
+- **模块当前设计（`product-spec/`，随迭代原地更新）**：
+  - [系统拓扑与进程边界](product-spec/架构与安全边界/系统拓扑与进程边界.md) · [接口契约](product-spec/架构与安全边界/接口契约.md)
+  - [Clash 订阅生成与纯净分流](product-spec/订阅与分流/Clash订阅生成与纯净分流.md)
+  - [收编托管与多管理端自愈](product-spec/节点Agent/收编托管与多管理端自愈.md)
+  - [免编译发布安装与自更新](product-spec/发布与安装升级/免编译发布安装与自更新.md)
+- **历史验证与评估归档（`docs/YYYY-MM-DD-<topic>/`）**：
+  - [首版验证与资源抽样记录](docs/2026-11-08-initial-verification/verification.md) · [源码构建与自编译评估](docs/2026-11-13-source-build-assessment/assessment.md)
+
+核心能力摘要：
 
 - **节点接入与多管理端**：节点支持 HTTPS 域名或带 IP SAN 证书的 IP（私有 CA 可用 `--ca-file` 导入），首次凭 `ENROLL_TOKEN` 注册换取绑定该节点 ID 的独立 Token，并可通过 `add-manager` 同时接入多个独立管理端；私钥始终留在节点本地。
 - **动态固定订阅与专属纯净分流**：
@@ -250,6 +260,7 @@ export PUBLIC_URL=http://127.0.0.1:8080
 
 Canonical 技能位于 `skills/`，`.agents/skills`、`.claude/skills`、`.codex/skills` 通过相对符号链接指向同一份内容：
 
+- [多服务器集群实战运维与排障](skills/proxy-cluster-ops/SKILL.md)（远程非交互连接避坑、存量内核探测与 `--adopt-existing` 判定、纯 IP 私有 CA 与 Clash 双端口订阅、`systemd` 启动顺序与 10 次退避自愈、多管理端接入）
 - [安装管理端](skills/install-proxy-manage-server/SKILL.md)
 - [安装代理节点](skills/install-proxy-server/SKILL.md)
 - [原始协议部署参考](skills/proxy-server-setup/SKILL.md)（自动初始化 Hysteria2 与 VLESS+REALITY；SOCKS5 / HTTP / HTTPS 保留为手工扩展参考）

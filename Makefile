@@ -27,6 +27,7 @@ test:
 check:
 	go vet -tags stdjson,gjson ./...
 	bash -n scripts/*.sh
+	bash scripts/check-context.sh
 
 clean:
 	rm -rf bin web/dist

@@ -12,7 +12,7 @@ description: >-
 
 ## 在本 monorepo 中使用
 
-本目录保留原始单机协议部署参考。产品化部署先读仓库 [AGENTS.md](../../AGENTS.md)：代理节点使用 [install-proxy-server](../install-proxy-server/SKILL.md)，控制面使用 [install-proxy-manage-server](../install-proxy-manage-server/SKILL.md)。管理端只有 Hertz / SQLite / 嵌入前端，不能在上面执行下面的代理核心安装步骤。
+本目录保留原始单机协议部署参考。产品化部署先读仓库 [AGENTS.md](../../AGENTS.md)：集群实战排障与存量收编判定使用 [proxy-cluster-ops](../proxy-cluster-ops/SKILL.md)，代理节点安装使用 [install-proxy-server](../install-proxy-server/SKILL.md)，控制面安装使用 [install-proxy-manage-server](../install-proxy-manage-server/SKILL.md)。管理端只有 Hertz / SQLite / 嵌入前端，不能在上面执行下面的代理核心安装步骤。
 
 节点 Agent 自动初始化 Hysteria2 和 VLESS+REALITY，负责管理两个独立核心进程并定期注册/心跳；SOCKS5 / HTTP / HTTPS 保留为手工扩展参考，默认不会部署。旧模板是单机静态模板，中心实际通过结构化模型按订阅当前选择动态生成 mihomo YAML，不直接执行整份模板的占位符替换。
 

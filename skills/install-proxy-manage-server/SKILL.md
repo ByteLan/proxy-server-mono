@@ -5,16 +5,16 @@ description: 从 GitHub Release 下载、初始化或手动更新本仓库 Go/He
 
 # 安装代理管理端
 
-先读仓库 [AGENTS.md](../../AGENTS.md) 和 [部署指南](../../docs/deployment.md)。首次下载、私库认证及版本选择按[发布指南](../../docs/releases.md)执行；源码根目录是本文件所在目录的上两级。
+先读仓库 [AGENTS.md](../../AGENTS.md)、[系统拓扑与进程边界](../../product-spec/架构与安全边界/系统拓扑与进程边界.md) 与 [免编译发布安装规范](../../product-spec/发布与安装升级/免编译发布安装与自更新.md)。真实云服务器连接避坑、纯 IP 私有 CA 签发及集群排障配合阅读 [多服务器集群实战运维](../proxy-cluster-ops/SKILL.md)；源码根目录是本文件所在目录的上两级。
 
-推荐开发机编译并手动发布 Release，VPS 只下载已编译程序，无需 Go/Node 编译环境。发布者在工作树干净、当前 commit 已自行 push 后运行 `GOTOOLCHAIN=auto make publish`（默认 main-sha 预发布）；正式版本用 `bash scripts/publish-release.sh --tag vX.Y.Z`，只本地检查用 `--dry-run`，具体参数见发布指南。实际发布需要 gh 登录和仓库写权限；dry-run 不需要登录也不证明已发布。发布凭据与 VPS Contents 只读下载 token 分开保管。
+推荐开发机编译并手动发布 Release，VPS 只下载已编译程序，无需 Go/Node 编译环境。发布者在工作树干净、当前 commit 已自行 push 后运行 `GOTOOLCHAIN=auto make publish`（默认 `main-<sha12>` 预发布）；正式版本用 `bash scripts/publish-release.sh --tag vX.Y.Z`，只本地检查用 `--dry-run`。实际发布需要 `gh` 登录和仓库写权限；dry-run 不需要登录也不证明已发布。发布凭据与 VPS `Contents: Read-only` 下载 token 分开保管。
 
 仓库没有分支 push 自动构建或发布；发布脚本不自动 commit/push，也不覆盖已发布 tag。Release 安装与 update 依赖维护者已上传完整资产；没有对应发布时使用本地手动构建安装流程，不把 update 描述为已支持拉取源码编译。
 
 管理端只提供控制面、SQLite 和嵌入的 React/Arco UI；不要在管理端安装代理核心或打开代理监听。目标是 Linux systemd 主机，1 核 / 1 GiB 尚未实测，构建由维护者在开发机手动完成。
 
 1. 确认目标架构、已有安装、对外 HTTPS 地址与本机监听地址。检查已有 `/etc/proxy-manage-server/manager.env` 和 DATA_DIR，升级时保留凭据与数据库。
-2. 优先按发布指南经 GitHub Contents API 获取独立 `install.sh`，在目标机以管理员运行 `bash install.sh manager [渠道/版本选项] -- --public-url URL [TLS参数]`。它验证发布程序与四文件 bundle 后完成初始化，无需源码、Go/Node、gh 或复制 scripts/deploy。安装阶段需要 Python3、OpenSSL、systemd 工具，首次获取脚本需要 curl。私库使用单仓库 Contents 只读 PAT，经 GITHUB_TOKEN / GH_TOKEN 或 `--token-file`（普通文件、0600）提供；不把 token 放到参数、回复、日志或 service env。下载时的 Authorization 不转发到跨域存储。
+2. 获取独立 `install.sh`（公开库直接下载 Release 资产中的 `install.sh` 或仓库 `scripts/install.sh`；私库可通过 `curl --config -` 传入 `Authorization: Bearer <GITHUB_TOKEN>` 请求 `https://api.github.com/repos/ByteLan/proxy-server-mono/contents/scripts/install.sh?ref=main` 并加 `--header 'Accept: application/vnd.github.raw+json'`），在目标机以管理员运行 `bash install.sh manager [渠道/版本选项] -- --public-url URL [TLS参数]`。它验证发布程序与四文件 bundle 后完成初始化，无需源码、Go/Node、gh 或复制 scripts/deploy。安装阶段需要 Python3、OpenSSL、systemd 工具，首次获取脚本需要 curl。私库使用单仓库 Contents 只读 PAT，经 GITHUB_TOKEN / GH_TOKEN 或 `--token-file`（普通文件、0600）提供；不把 token 放到参数、回复、日志或 service env。下载时的 Authorization 不转发到跨域存储。
 3. 已获得脚本与安全设置的 GITHUB_TOKEN 时，可执行：
 
    ```bash
@@ -35,7 +35,7 @@ description: 从 GitHub Release 下载、初始化或手动更新本仓库 Go/He
 
 配置变量为 LISTEN、DATA_DIR、PUBLIC_URL、ADMIN_TOKEN、ENROLL_TOKEN、可选 MASTER_KEY 和成对的 TLS_CERT_FILE / TLS_KEY_FILE。脚本重跑保留已有环境文件；修改监听/地址需明确编辑该文件再重启；显式传 TLS 文件会复制并更新 TLS 路径。续期需手动更新文件并重启，不自动 ACME。改变主密钥不等同于 token 轮换，错误更换会使历史凭据不可解密。
 
-后续仅更新程序，先运行 `proxy-manage-server version` 与 `update --check`；默认 main，也可 `--channel stable` 或 `--version TAG`。以管理员运行安装路径的程序加 `update`，私库可加 `--token-file /root/.config/proxy-server-mono/github-token`，然后手动 `systemctl restart proxy-manage-server`。update 校验 SHA256、同目录原子替换并保留 `.previous`，不改配置、数据或协议核心，不自动重启。升级前停服备份实际 DATA_DIR（含 master.key 或原 MASTER_KEY）与 manager.env；二进制回退先停服，再恢复 `.previous`，不能声称数据库也已回滚。具体命令见发布指南。
+后续仅更新程序，先运行 `proxy-manage-server version` 与 `update --check`；默认 main，也可 `--channel stable` 或 `--version TAG`。以管理员运行安装路径的程序加 `update`，私库可加 `--token-file /root/.config/proxy-server-mono/github-token`，然后手动 `systemctl restart proxy-manage-server`。update 校验 SHA256、同目录原子替换并保留 `.previous`，不改配置、数据或协议核心，不自动重启。升级前停服备份实际 DATA_DIR（`cp -a /var/lib/proxy-manage-server ...`，含 `master.key` 或原 `MASTER_KEY`）与 `/etc/proxy-manage-server`；二进制回退先 `systemctl stop proxy-manage-server`，再用 `cp -p .../proxy-manage-server.previous .../proxy-manage-server` 恢复并启动，不能声称数据库也已回滚。
 
 保持 `/opt/proxy-manage-server/bin` 为 root 所有，服务用户不能自改二进制。GitHub PAT 不需要长期放入服务环境；确需 sudo 转发时只 preserve 对应 GitHub 变量，不保留全部环境。较旧程序无 update 子命令时重新使用 bootstrap 安装，已有环境与数据库保留，但安装器会重启服务。
 

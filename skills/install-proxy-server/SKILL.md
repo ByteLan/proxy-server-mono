@@ -5,16 +5,16 @@ description: 从 GitHub Release 下载、初始化或手动更新本仓库 Go �
 
 # 安装代理节点
 
-先读 [AGENTS.md](../../AGENTS.md)、[部署指南](../../docs/deployment.md)；首次下载、私库鉴权、渠道与回退按[发布指南](../../docs/releases.md)。需要协议细节时读 [原始协议参考](../proxy-server-setup/SKILL.md)。源码根目录是本文件所在目录的上两级。
+先读 [AGENTS.md](../../AGENTS.md)、[节点收编托管与自愈规范](../../product-spec/节点Agent/收编托管与多管理端自愈.md) 与 [免编译发布安装规范](../../product-spec/发布与安装升级/免编译发布安装与自更新.md)。跨机远程连接避坑、存量主机探测判定与恢复自检见 [多服务器集群实战运维](../proxy-cluster-ops/SKILL.md)；需要底层协议细节时读 [原始协议参考](../proxy-server-setup/SKILL.md)。源码根目录是本文件所在目录的上两级。
 
-推荐开发机编译并手动发布 Release，VPS 只下载已编译程序，无需 Go/Node 编译环境。发布者在工作树干净、当前 commit 已自行 push 后运行 `GOTOOLCHAIN=auto make publish`（默认 main-sha 预发布）；正式版本用 `bash scripts/publish-release.sh --tag vX.Y.Z`，只本地检查用 `--dry-run`，具体参数见发布指南。实际发布需要 gh 登录和仓库写权限；dry-run 不需要登录也不证明已发布。发布凭据与 VPS Contents 只读下载 token 分开保管。
+推荐开发机编译并手动发布 Release，VPS 只下载已编译程序，无需 Go/Node 编译环境。发布者在工作树干净、当前 commit 已自行 push 后运行 `GOTOOLCHAIN=auto make publish`（默认 `main-<sha12>` 预发布）；正式版本用 `bash scripts/publish-release.sh --tag vX.Y.Z`，只本地检查用 `--dry-run`。实际发布需要 `gh` 登录和仓库写权限；dry-run 不需要登录也不证明已发布。发布凭据与 VPS `Contents: Read-only` 下载 token 分开保管。
 
 仓库没有分支 push 自动构建或发布；发布脚本不自动 commit/push，也不覆盖已发布 tag。Release 安装与 update 依赖维护者已上传完整资产；没有对应发布时使用本地手动构建安装流程，不把 update 描述为已支持拉取源码编译。
 
 节点 Agent 与两个独立核心运行在节点机，不能把管理端当成代理出口。安装目标为 Linux systemd amd64/arm64/armv7；ARMv7 核心也需单独提供相同架构版本。确认公网地址、UDP/TCP端口、云安全组和主机防火墙。节点能发心跳不代表客户端能访问其代理端口。
 
 1. 明确管理端地址和节点对外地址。`manager_url` 使用 `https://管理域名或IP[:端口]`；`--server` 是客户端连接节点的域名/IP，不带 scheme/端口。使用 IP 的管理端证书必须包含对应 IP SAN，私有 CA 用 `--ca-file`，不关闭校验。
-2. 优先按发布指南经 GitHub Contents API 获取独立 `install.sh`。它下载并校验目标架构 Agent 及安装 bundle，无需源码目录、Go/Node或gh；安装阶段需要 Python3、OpenSSL和systemd工具，首次获取脚本需要curl。默认仓库 ByteLan/proxy-server-mono、main 渠道；`node --channel stable -- ...` 选择正式 release，`node --version TAG -- ...` 固定发布。私库 PAT 只选此仓库 Contents 只读，经 GITHUB_TOKEN / GH_TOKEN 或 `--token-file`（普通0600文件）提供，不放到命令参数或长期service env。
+2. 获取独立 `install.sh`（公开库直接下载 Release 的 `install.sh` 或仓库 `scripts/install.sh`；私库通过 `curl --config -` 携带 `Authorization: Bearer <GITHUB_TOKEN>` 请求 GitHub Contents API `contents/scripts/install.sh?ref=main`）。它下载并校验目标架构 Agent 及安装 bundle，无需源码目录、Go/Node或gh；安装阶段需要 Python3、OpenSSL和systemd工具，首次获取脚本需要curl。默认仓库 ByteLan/proxy-server-mono、main 渠道；`node --channel stable -- ...` 选择正式 release，`node --version TAG -- ...` 固定发布。私库 PAT 只选此仓库 Contents 只读，经 GITHUB_TOKEN / GH_TOKEN 或 `--token-file`（普通0600文件）提供，不放到命令参数或长期service env。
 3. 根据目标主机现状选择**方案 A（已有内核无感收编）**或**方案 B（纯新机器统一托管）**。通过安全交互向环境提供管理端 `ENROLL_TOKEN`，它与 GitHub PAT、`ADMIN_TOKEN` 不同，不写在 CLI 参数、回复或日志中：
 
    - **方案 A：主机已运行 `hysteria.service` / `xray.service`（推荐用 `--adopt-existing`，免重装内核、不改端口密码、不断连）**：
