@@ -9,10 +9,10 @@ import (
 
 const (
 	GroupGeneral = "🌍 代理"
-	GroupAuto    = "[自动托管] ⚡ 最优测速"
-	GroupClaude  = "[自动托管] 🔒 Claude"
-	GroupChatGPT = "[自动托管] 🤖 ChatGPT"
-	GroupGoogle  = "[自动托管] 🔍 Google"
+	GroupAuto    = "[自动托管测速-无需手选] ⚡ 通用"
+	GroupClaude  = "[自动托管测速-无需手选] 🔒 Claude"
+	GroupChatGPT = "[自动托管测速-无需手选] 🤖 ChatGPT"
+	GroupGoogle  = "[自动托管测速-无需手选] 🔍 Google"
 	GroupGlobal  = "GLOBAL"
 
 	probeURL = "https://www.gstatic.com/generate_204"
@@ -290,7 +290,6 @@ func RenderSubscription(nodes []model.Node, sub model.Subscription) ([]byte, err
 			"url":       probeURL,
 			"interval":  300,
 			"tolerance": 50,
-			"hidden":    true,
 		})
 	}
 	groups = append(groups,
@@ -355,7 +354,6 @@ func strictAutoGroup(name string, memberNames []string) map[string]any {
 		"tolerance":        0,
 		"lazy":             false,
 		"max-failed-times": 1,
-		"hidden":           true,
 	}
 }
 

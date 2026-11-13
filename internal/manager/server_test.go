@@ -3,6 +3,7 @@ package manager
 import (
 	"bytes"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"github.com/cloudwego/hertz/pkg/common/ut"
 	"gopkg.in/yaml.v3"
@@ -243,8 +244,9 @@ func TestRepeatableSubscriptionURLViewingAndDualPortHTTPSubListener(t *testing.T
 	}
 
 	enroll(t, s, "sg01", "203.0.113.35")
+	subName := "主力订阅 Daily"
 	raw := mustCode(t, s, "POST", "/api/admin/subscriptions", adminTestToken, model.Subscription{
-		Name:    "daily",
+		Name:    subName,
 		NodeIDs: []string{"sg01"},
 		Enabled: true,
 	}, 201)
@@ -280,10 +282,27 @@ func TestRepeatableSubscriptionURLViewingAndDualPortHTTPSubListener(t *testing.T
 		t.Fatalf("subscription list did not persist viewable URLs: %+v", listed)
 	}
 
+	// Both main HTTP and SubHTTP serve subscription title headers without inner quotes.
+	wantDisp := "attachment; filename*=UTF-8''%E4%B8%BB%E5%8A%9B%E8%AE%A2%E9%98%85%20Daily"
+	wantTitle := "base64:" + base64.StdEncoding.EncodeToString([]byte(subName))
+	mainSubRes := ut.PerformRequest(s.HTTP.Engine, "GET", "/sub/"+tok, nil)
+	if got := mainSubRes.Header().Get("Content-Disposition"); got != wantDisp || strings.Contains(got, `"`) {
+		t.Fatalf("main Content-Disposition = %q, want %q", got, wantDisp)
+	}
+	if got := mainSubRes.Header().Get("profile-title"); got != wantTitle {
+		t.Fatalf("main profile-title = %q, want %q", got, wantTitle)
+	}
+
 	// SubHTTP serves /healthz and /sub/:token, and strictly rejects /api/admin/* and /api/agent/*.
 	subRes := ut.PerformRequest(s.SubHTTP.Engine, "GET", "/sub/"+tok, nil)
 	if subRes.Code != 200 || !bytes.Contains(subRes.Result().Body(), []byte("203.0.113.35")) {
 		t.Fatalf("SubHTTP /sub/:token failed: code=%d body=%s", subRes.Code, subRes.Result().Body())
+	}
+	if got := subRes.Header().Get("Content-Disposition"); got != wantDisp || strings.Contains(got, `"`) {
+		t.Fatalf("SubHTTP Content-Disposition = %q, want %q", got, wantDisp)
+	}
+	if got := subRes.Header().Get("profile-title"); got != wantTitle {
+		t.Fatalf("SubHTTP profile-title = %q, want %q", got, wantTitle)
 	}
 	for _, blocked := range []string{"/api/admin/nodes", "/api/admin/subscriptions", "/api/agent/register", "/"} {
 		res := ut.PerformRequest(s.SubHTTP.Engine, "GET", blocked, nil, ut.Header{Key: "Authorization", Value: "Bearer " + adminTestToken})

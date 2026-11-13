@@ -41,13 +41,25 @@ function Login({ onLogin }: { onLogin: (token: string) => void }) {
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  async function submit(event: React.FormEvent) {
+  async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!input.trim()) { setError('请输入管理令牌。'); return; }
+    const formToken = String(new FormData(event.currentTarget).get('password') || '').trim();
+    const trimmed = input.trim() || formToken;
+    if (!trimmed) { setError('请输入管理令牌。'); return; }
     setBusy(true); setError('');
     try {
-      await request(input.trim(), '/health');
-      onLogin(input.trim());
+      await request(trimmed, '/health');
+      try {
+        const PasswordCred = (window as unknown as {
+          PasswordCredential?: new (data: { id: string; password: string; name?: string }) => Credential;
+        }).PasswordCredential;
+        if (PasswordCred && navigator.credentials?.store) {
+          await navigator.credentials.store(new PasswordCred({ id: 'admin', password: trimmed, name: 'Proxy Console' }));
+        }
+      } catch {
+        // Ignore in non-secure contexts or browsers without PasswordCredential.
+      }
+      onLogin(trimmed);
     } catch (cause) { setError(messageOf(cause)); }
     finally { setBusy(false); }
   }
@@ -62,13 +74,31 @@ function Login({ onLogin }: { onLogin: (token: string) => void }) {
       <Card className="login-card" bordered={false}>
         <div className="login-icon"><IconSettings /></div><h2>登录管理控制台</h2>
         <p>使用安装管理服务时生成的管理员令牌。</p>
-        <form onSubmit={submit}>
+        <form method="post" action="/" autoComplete="on" onSubmit={submit}>
+          <input
+            type="text"
+            name="username"
+            autoComplete="username"
+            defaultValue="admin"
+            readOnly
+            tabIndex={-1}
+            aria-hidden="true"
+            className="login-username-anchor"
+          />
           <label className="field-label" htmlFor="admin-token">管理令牌</label>
-          <Input.Password id="admin-token" autoComplete="off" placeholder="输入 ADMIN_TOKEN" value={input} onChange={setInput} size="large" />
+          <Input.Password
+            id="admin-token"
+            name="password"
+            autoComplete="current-password"
+            placeholder="输入 ADMIN_TOKEN"
+            value={input}
+            onChange={setInput}
+            size="large"
+          />
           {error && <div className="login-error" role="alert">{error}</div>}
           <Button type="primary" htmlType="submit" long size="large" loading={busy}>进入控制台 <IconArrowRight /></Button>
         </form>
-        <div className="login-note">令牌仅保存在当前标签页会话中。</div>
+        <div className="login-note">支持浏览器密码管理器保存与自动填充；运行态令牌仅保存在当前标签页会话中。</div>
       </Card>
     </div><div className="login-footer">Proxy Console · 节点与订阅管理</div>
   </div>;

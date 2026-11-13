@@ -115,6 +115,7 @@ h1 { font-size: 29px; font-weight: 650; letter-spacing: -1px; margin: 8px 0 9px;
 .login-card .arco-btn { margin-top: 18px; border-radius: 5px; font-size: 12px; }
 .login-card .arco-btn svg { margin-left: 7px; }
 .login-card .arco-input-wrapper { border-radius: 5px; font-size: 12px; }
+.login-username-anchor { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; opacity: 0; pointer-events: none; }
 .login-note { color: #a0ada0; font-size: 10px; text-align: center; margin-top: 22px; }
 .login-error { color: #d76258; font-size: 11px; margin-top: 10px; }
 .login-footer { color: #9bae99; font-size: 10px; text-align: center; }

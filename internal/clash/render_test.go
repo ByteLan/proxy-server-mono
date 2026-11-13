@@ -175,12 +175,9 @@ func TestGlobalDefaultsToRuleProxyAndStrictSiteGroupsIsolateNodes(t *testing.T) 
 		}{g.Type, g.Proxies, g.Interval, g.Tolerance, g.Lazy, g.Hidden, g.MaxFailedTimes}
 	}
 
-	// GLOBAL and GroupGeneral must stay visible; GroupAuto and strict groups must be hidden.
-	if groupByName[GroupGeneral].Hidden {
-		t.Fatal("GroupGeneral must remain visible")
-	}
-	if !groupByName[GroupAuto].Hidden {
-		t.Fatal("GroupAuto must be hidden by default")
+	// All groups stay visible so mobile clients can inspect auto-selected nodes and latency.
+	if groupByName[GroupGeneral].Hidden || groupByName[GroupAuto].Hidden {
+		t.Fatal("GroupGeneral and GroupAuto must remain visible")
 	}
 
 	// GLOBAL must explicitly default to GroupGeneral ("🌍 代理"), never DIRECT.
@@ -199,7 +196,7 @@ func TestGlobalDefaultsToRuleProxyAndStrictSiteGroupsIsolateNodes(t *testing.T) 
 		t.Fatalf("unexpected general proxies: got %v want %v", groupByName[GroupGeneral].Proxies, want)
 	}
 
-	// Strict site groups must be hidden url-test, REJECT-first, tolerance 0, lazy=false, max-failed-times=1, no DIRECT, no dirty node.
+	// Strict site groups must be visible url-test, REJECT-first, tolerance 0, lazy=false, max-failed-times=1, no DIRECT, no dirty node.
 	for name, wantProxies := range map[string][]string{
 		GroupClaude:  {"REJECT", cleanAHY2, cleanAVLESS},
 		GroupChatGPT: {"REJECT", cleanBHY2},
@@ -209,8 +206,8 @@ func TestGlobalDefaultsToRuleProxyAndStrictSiteGroupsIsolateNodes(t *testing.T) 
 		if !exists {
 			t.Fatalf("missing group %s", name)
 		}
-		if g.Type != "url-test" || !g.Hidden || g.Interval != 30 || g.Tolerance != 0 || g.Lazy == nil || *g.Lazy != false || g.MaxFailedTimes != 1 {
-			t.Fatalf("group %s is not strict hidden url-test: %+v", name, g)
+		if g.Type != "url-test" || g.Hidden || g.Interval != 30 || g.Tolerance != 0 || g.Lazy == nil || *g.Lazy != false || g.MaxFailedTimes != 1 {
+			t.Fatalf("group %s is not strict visible url-test: %+v", name, g)
 		}
 		if !reflect.DeepEqual(g.Proxies, wantProxies) {
 			t.Fatalf("group %s proxies: got %v want %v", name, g.Proxies, wantProxies)

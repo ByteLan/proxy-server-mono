@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"crypto/tls"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -476,6 +477,23 @@ func (s *Server) updateSubscription(_ context.Context, c *app.RequestContext) {
 		c.JSON(200, p)
 	}
 }
+func encodeRFC5987(s string) string {
+	const hex = "0123456789ABCDEF"
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') ||
+			ch == '!' || ch == '#' || ch == '$' || ch == '&' || ch == '+' || ch == '-' ||
+			ch == '.' || ch == '^' || ch == '_' || ch == '`' || ch == '|' || ch == '~' {
+			b.WriteByte(ch)
+		} else {
+			b.WriteByte('%')
+			b.WriteByte(hex[ch>>4])
+			b.WriteByte(hex[ch&0x0f])
+		}
+	}
+	return b.String()
+}
 func (s *Server) writeYAML(c *app.RequestContext, p model.Subscription) {
 	nodes, err := s.Store.nodes(false)
 	if err != nil {
@@ -487,7 +505,12 @@ func (s *Server) writeYAML(c *app.RequestContext, p model.Subscription) {
 		fail(c, 500, "configuration rendering failed")
 		return
 	}
+	title := strings.TrimSpace(p.Name)
+	if title == "" {
+		title = "proxy"
+	}
 	c.Header("profile-update-interval", "1")
-	c.Header("Content-Disposition", `inline; filename="proxy.yaml"`)
+	c.Header("profile-title", "base64:"+base64.StdEncoding.EncodeToString([]byte(title)))
+	c.Header("Content-Disposition", "attachment; filename*=UTF-8''"+encodeRFC5987(title))
 	c.Data(200, "text/yaml; charset=utf-8", raw)
 }
