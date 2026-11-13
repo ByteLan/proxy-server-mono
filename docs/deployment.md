@@ -77,6 +77,27 @@ manager.example.com {
 
 ## 代理节点
 
+节点部署支持两种模式：**已有内核无感收编（方案 A：`--adopt-existing`）**与**纯新机器统一托管（方案 B：默认模式）**。
+
+### 方案 A：已有内核机器无感收编（`--adopt-existing`）
+
+如果目标主机已经安装并正在通过 systemd 运行 `hysteria.service` 与/或 `xray.service`（例如先前按 `proxy-server-setup` 搭建），可使用 `--adopt-existing` 直接收编：
+
+```bash
+export ENROLL_TOKEN  # 从私有配置或交互输入读取，勿提交到仓库
+sudo --preserve-env=ENROLL_TOKEN bash scripts/install-proxy-server.sh \
+  --binary ./bin/proxy-server \
+  --adopt-existing \
+  --manager https://manager.example.com \
+  --server node01.example.com --name node01
+```
+
+- 脚本只安装 `/opt/proxy-server/bin/proxy-server` 与 `proxy-server.service`，**不覆盖或重启已有 `hysteria` / `xray` 二进制及 systemd 服务，不改动现有端口与连接密码**。
+- `proxy-server adopt` 默认读取 `/etc/hysteria/config.yaml`（提取密码、监听端口、证书 SHA-256 指纹与 SNI）与 `/etc/xray/config.json`（支持 JSONC 注释，提取 `vless`+REALITY 公钥、`socks`、`http`、`http`+TLS 入站），私钥始终不写入 `/etc/proxy-server/config.json`。自定义路径或服务名可通过 `--hysteria-config`、`--hysteria-unit`、`--xray-config`、`--xray-unit` 指定。
+- 运行时 `proxy-server` 不拉起子进程，而是通过 `systemctl is-active` 探测被收编的 systemd 单元状态并随心跳上报；后续重启或升级 `proxy-server` **不会中断**原有的代理连接。
+
+### 方案 B：纯新机器统一安装托管（默认模式）
+
 从各核心的官方 release 选择固定版本和正确 Linux 架构，下载并解包可执行文件，在可信渠道取得对应 SHA256。不要用 `latest`；不要只用对刚下载文件现算的 hash 替代对发布者预期 hash 的验证。Hysteria 与 Xray 版本及客户端版本需要一起做协议连通测试；版本记录不等同于已验证兼容性。
 
 - Hysteria2 发布：<https://github.com/HyNetworks/hysteria/releases>

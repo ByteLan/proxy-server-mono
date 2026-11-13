@@ -15,7 +15,7 @@ Read [architecture](docs/architecture.md), [API contract](docs/api.md), and [REA
 End-to-end zero-server-compile workflows are documented in `README.md` and `docs/`:
 
 - **Local build & GitHub Release publishing**: [README — 本地开发与发布 GitHub Release](README.md#本地开发与发布-github-release) · [docs/releases.md](docs/releases.md#维护者手动构建与发布) · [scripts/publish-release.sh](scripts/publish-release.sh) · [scripts/build-release.sh](scripts/build-release.sh)
-- **Server zero-compile installation (Manager & Node)**: [README — Server 端免编译安装](README.md#server-端免编译安装) · [docs/deployment.md](docs/deployment.md) · [scripts/install.sh](scripts/install.sh) · [scripts/install-proxy-manage-server.sh](scripts/install-proxy-manage-server.sh) · [scripts/install-proxy-server.sh](scripts/install-proxy-server.sh)
+- **Server zero-compile installation (Manager, Node fresh install & `--adopt-existing` companion mode)**: [README — Server 端免编译安装](README.md#server-端免编译安装) · [docs/deployment.md](docs/deployment.md) · [scripts/install.sh](scripts/install.sh) · [scripts/install-proxy-manage-server.sh](scripts/install-proxy-manage-server.sh) · [scripts/install-proxy-server.sh](scripts/install-proxy-server.sh)
 - **Server zero-compile update (frontend + backend via embedded binary) & `.previous` rollback**: [README — Server 端免编译更新与回退](README.md#server-端免编译更新与回退) · [docs/releases.md](docs/releases.md#查看检查与更新) · [internal/selfupdate](internal/selfupdate/update.go)
 - **Subscription routing & node enrollment**: [README — 订阅分流与节点接入说明](README.md#订阅分流与节点接入说明) · [docs/architecture.md](docs/architecture.md) · [docs/api.md](docs/api.md)
 

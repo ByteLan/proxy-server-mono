@@ -28,6 +28,7 @@ type Runner struct {
 	HeartbeatInterval time.Duration
 	RetryMin          time.Duration
 	RetryMax          time.Duration
+	ServiceProbe      func(ctx context.Context, unit string) (bool, string)
 	Logf              func(string, ...any)
 }
 
@@ -97,6 +98,9 @@ func (r *Runner) Run(ctx context.Context, configPath string) error {
 			r.log("identity or manager changed; restart agent to apply configuration")
 		} else {
 			cfg.Endpoints = next.Endpoints
+			if len(cfg.Commands)+len(next.Services) <= 8 {
+				cfg.Services = next.Services
+			}
 		}
 		if token == "" {
 			var response struct {
@@ -121,7 +125,16 @@ func (r *Runner) Run(ctx context.Context, configPath string) error {
 		}
 		if token != "" {
 			hash := endpointsHash(cfg.Endpoints)
-			request := model.HeartbeatRequest{ID: cfg.ID, Version: Version, ConfigHash: hash, Cores: supervisor.status()}
+			cores := supervisor.status()
+			probe := r.ServiceProbe
+			if probe == nil {
+				probe = probeSystemdService
+			}
+			for _, svc := range cfg.Services {
+				running, msg := probe(ctx, svc.Unit)
+				cores = append(cores, model.CoreStatus{Name: svc.Name, Running: running, Error: msg})
+			}
+			request := model.HeartbeatRequest{ID: cfg.ID, Version: Version, ConfigHash: hash, Cores: cores}
 			if hash != lastHash {
 				endpoints := cfg.Endpoints
 				request.Endpoints = &endpoints

@@ -97,6 +97,17 @@ func (s *supervisor) status() []model.CoreStatus {
 
 func (s *supervisor) wait() { s.wg.Wait() }
 
+func probeSystemdService(ctx context.Context, unit string) (bool, string) {
+	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(probeCtx, "systemctl", "is-active", "--quiet", "--", unit)
+	cmd.Env = coreEnvironment(os.Environ())
+	if err := cmd.Run(); err != nil {
+		return false, "systemd unit " + unit + " is not active"
+	}
+	return true, ""
+}
+
 func coreEnvironment(environment []string) []string {
 	clean := make([]string, 0, len(environment))
 	for _, item := range environment {

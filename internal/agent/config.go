@@ -36,16 +36,24 @@ type Command struct {
 	Args []string `json:"args"`
 }
 
+// ExternalService tracks an existing systemd-managed proxy core in companion
+// ("adopt") mode so the agent never spawns a duplicate listener process.
+type ExternalService struct {
+	Name string `json:"name"`
+	Unit string `json:"unit"`
+}
+
 type Config struct {
-	ID                string           `json:"id"`
-	Name              string           `json:"name"`
-	Manager           string           `json:"manager_url"`
-	CAFile            string           `json:"ca_file,omitempty"`
-	AllowInsecureHTTP bool             `json:"allow_insecure_http,omitempty"`
-	EnrollToken       string           `json:"enroll_token,omitempty"`
-	TokenFile         string           `json:"token_file"`
-	Endpoints         []model.Endpoint `json:"endpoints"`
-	Commands          []Command        `json:"commands"`
+	ID                string            `json:"id"`
+	Name              string            `json:"name"`
+	Manager           string            `json:"manager_url"`
+	CAFile            string            `json:"ca_file,omitempty"`
+	AllowInsecureHTTP bool              `json:"allow_insecure_http,omitempty"`
+	EnrollToken       string            `json:"enroll_token,omitempty"`
+	TokenFile         string            `json:"token_file"`
+	Endpoints         []model.Endpoint  `json:"endpoints"`
+	Commands          []Command         `json:"commands"`
+	Services          []ExternalService `json:"services,omitempty"`
 }
 
 // InitOptions describes a new node. Core binaries are installed separately and
@@ -113,6 +121,9 @@ func (c Config) Validate() error {
 			return errors.New("unsupported endpoint type")
 		}
 	}
+	if len(c.Commands)+len(c.Services) > 8 {
+		return errors.New("at most 8 supervised commands and external services are supported")
+	}
 	seen = make(map[string]bool)
 	for _, command := range c.Commands {
 		if command.Name == "" || command.Path == "" || seen[command.Name] {
@@ -120,7 +131,25 @@ func (c Config) Validate() error {
 		}
 		seen[command.Name] = true
 	}
+	for _, service := range c.Services {
+		if service.Name == "" || seen[service.Name] || !validUnitName(service.Unit) {
+			return errors.New("external services require a unique name and valid systemd unit")
+		}
+		seen[service.Name] = true
+	}
 	return nil
+}
+
+func validUnitName(unit string) bool {
+	if len(unit) == 0 || len(unit) > 120 || unit[0] == '-' || unit[0] == '.' {
+		return false
+	}
+	for _, r := range unit {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '-' || r == '.' || r == '@') {
+			return false
+		}
+	}
+	return true
 }
 
 func validateHost(host string) error {

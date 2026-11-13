@@ -27,7 +27,7 @@ func main() {
 
 func execute(ctx context.Context, args []string, output io.Writer) error {
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" || args[0] == "help" {
-		fmt.Fprintln(output, "Usage: proxy-server init [options] | run --config FILE | version | update [options]\n\ninit generates a node identity, HY2/REALITY credentials and local core configs.\nrun supervises proxy cores and reports status to the manager.\nUse init --help or run --help for options.\nEnrollment: ENROLL_TOKEN environment variable, or init --enroll-token.\nCore binaries must be installed separately with tested, pinned versions.")
+		fmt.Fprintln(output, "Usage: proxy-server init [options] | adopt [options] | run --config FILE | version | update [options]\n\ninit generates a node identity, HY2/REALITY credentials and local core configs.\nadopt imports existing host Hysteria2/Xray configs without reinstalling or spawning duplicate cores.\nrun supervises proxy cores (or probes adopted systemd units) and reports status to the manager.\nUse init --help, adopt --help or run --help for options.\nEnrollment: ENROLL_TOKEN environment variable, or init/adopt --enroll-token.\nCore binaries must be installed separately with tested, pinned versions.")
 		return nil
 	}
 	switch args[0] {
@@ -36,6 +36,36 @@ func execute(ctx context.Context, args []string, output io.Writer) error {
 		return nil
 	case "update":
 		return updatecmd.Run(ctx, "proxy-server", args[1:], output)
+	case "adopt":
+		flags := flag.NewFlagSet("adopt", flag.ContinueOnError)
+		flags.SetOutput(output)
+		var options agent.AdoptOptions
+		flags.StringVar(&options.ConfigPath, "config", "config.json", "agent JSON config path (must not exist)")
+		flags.StringVar(&options.Server, "server", "", "public hostname or IP advertised to clients")
+		flags.StringVar(&options.Name, "name", "", "node display name")
+		flags.StringVar(&options.Manager, "manager", "", "manager HTTPS URL, including IP/domain and port")
+		flags.StringVar(&options.EnrollToken, "enroll-token", "", "initial enrollment key; ENROLL_TOKEN at run time is preferred")
+		flags.StringVar(&options.CAFile, "ca-file", "", "additional CA PEM file for manager TLS (system CAs remain enabled)")
+		flags.BoolVar(&options.AllowInsecureHTTP, "allow-insecure-http", false, "allow loopback-only HTTP for local development")
+		flags.StringVar(&options.HysteriaConfig, "hysteria-config", "", "existing Hysteria2 server YAML path (defaults to /etc/hysteria/config.yaml if present)")
+		flags.StringVar(&options.HysteriaUnit, "hysteria-unit", agent.DefaultHysteriaUnit, "systemd unit managing the existing Hysteria2 service")
+		flags.StringVar(&options.XrayConfig, "xray-config", "", "existing Xray server JSON path (defaults to /etc/xray/config.json if present)")
+		flags.StringVar(&options.XrayUnit, "xray-unit", agent.DefaultXrayUnit, "systemd unit managing the existing Xray service")
+		if err := flags.Parse(args[1:]); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return nil
+			}
+			return err
+		}
+		if flags.NArg() != 0 {
+			return errors.New("unexpected positional arguments")
+		}
+		cfg, err := agent.Adopt(options)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(output, "Adopted existing node %s (%s) with %d endpoint(s). Existing core services remain untouched.\nRun: proxy-server run --config %s\n", cfg.Name, cfg.ID, len(cfg.Endpoints), options.ConfigPath)
+		return nil
 	case "init":
 		flags := flag.NewFlagSet("init", flag.ContinueOnError)
 		flags.SetOutput(output)

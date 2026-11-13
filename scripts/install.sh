@@ -10,8 +10,10 @@ Usage: install.sh manager|node [--repo owner/repo] [--channel main|stable]
 
 Default repository: ByteLan/proxy-server-mono; default channel: main.
 Private repositories: GITHUB_TOKEN / GH_TOKEN, or a regular 0600 token file.
-The manager installer needs --public-url; the node installer also needs manager,
-public node address and pinned Hysteria2/Xray binaries, hashes and versions.
+The manager installer needs --public-url; the node installer needs --manager,
+--server and --name, plus either --adopt-existing (to import already running
+Hysteria2/Xray services) or pinned Hysteria2/Xray binaries, hashes and versions
+for a fresh host.
 --binary is supplied by this bootstrap and must not be passed after --.
 Run as root for installation, or set DESTDIR for staging without system changes.
 Requires Python 3 and the dependencies of the selected bundled installer.

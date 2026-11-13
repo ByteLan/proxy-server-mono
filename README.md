@@ -2,7 +2,7 @@
 
 集中管理多个海外代理节点，并通过固定订阅链接动态生成 mihomo / Clash Meta YAML 配置（内置国内 DoH 分流、全局模式对齐规则节点，以及 Claude / ChatGPT / Google 专属纯净节点自动测速与禁直连保护）。
 
-- `proxy-server`：Go 节点 Agent，管理独立 Hysteria2 / Xray 子进程、首次注册和定期心跳。
+- `proxy-server`：Go 节点 Agent，支持**无感收编主机已有 Hysteria2 / Xray 服务（方案 A：`--adopt-existing`）**或**纯新机器统一托管独立子进程（方案 B）**，负责首次注册和定期心跳。
 - `proxy-manage-server`：Go / Hertz 控制面，SQLite 保存节点与订阅，通过 `go:embed` 内置编译后的 React / Arco Design 前端；不运行代理核心、不转发代理流量。
 - `web`：React / TypeScript / Vite / Arco Design 管理界面源码。
 
@@ -108,21 +108,38 @@ sudo bash ./scripts/install.sh manager \
 
 ### 4. 安装代理节点（proxy-server）
 
-先按[部署指南](docs/deployment.md#代理节点)在节点准备好官方固定版本的 `hysteria` 与 `xray` 二进制及预期 SHA256（安装器不会自动拉取 `latest` 协议核心），然后执行：
+支持以下两种节点部署模式（二选一）：
 
-```bash
-read -r -s -p 'Manager enrollment key: ' ENROLL_TOKEN && printf '\n'
-export ENROLL_TOKEN
-sudo --preserve-env=ENROLL_TOKEN bash ./scripts/install.sh node \
-  --token-file /root/.config/proxy-server-mono/github-token -- \
-  --manager https://manager.example.com --server node01.example.com --name node01 \
-  --hy2-port 443 --vless-port 443 \
-  --hysteria-binary "$HYSTERIA_BINARY" --hysteria-sha256 "$HYSTERIA_SHA256" \
-  --core-version "hysteria=$HYSTERIA_VERSION" \
-  --xray-binary "$XRAY_BINARY" --xray-sha256 "$XRAY_SHA256" \
-  --core-version "xray=$XRAY_VERSION"
-unset ENROLL_TOKEN
-```
+- **方案 A：已有内核机器无感收编（`--adopt-existing`）**
+  适用于已经运行 `hysteria.service` / `xray.service`（例如先前按 `proxy-server-setup` 搭建）的存量云服务器。脚本仅安装 `proxy-server` Agent，**不重装内核二进制、不改端口与密码、不中断现有连接**，自动只读提取 `/etc/hysteria/config.yaml` 与 `/etc/xray/config.json`（含 `hysteria2`、`vless` REALITY 公钥推导、`socks5`、`http`、`https` 及证书 SHA-256 指纹）并通过 `systemctl is-active` 探测原有服务存活上报给管理端：
+
+  ```bash
+  read -r -s -p 'Manager enrollment key: ' ENROLL_TOKEN && printf '\n'
+  export ENROLL_TOKEN
+  sudo --preserve-env=ENROLL_TOKEN bash ./scripts/install.sh node \
+    --token-file /root/.config/proxy-server-mono/github-token -- \
+    --adopt-existing \
+    --manager https://manager.example.com --server node01.example.com --name node01
+  unset ENROLL_TOKEN
+  ```
+  *(公开库省略 `--token-file`；若配置文件或 systemd unit 名称非默认，可附加 `--hysteria-config`、`--hysteria-unit`、`--xray-config`、`--xray-unit`。)*
+
+- **方案 B：纯新机器统一安装托管（默认模式）**
+  适用于尚未部署协议内核的全新 VPS。先按[部署指南](docs/deployment.md#代理节点)在节点准备好官方固定版本的 `hysteria` 与 `xray` 二进制及预期 SHA256（安装器不会自动拉取 `latest` 协议核心），然后执行：
+
+  ```bash
+  read -r -s -p 'Manager enrollment key: ' ENROLL_TOKEN && printf '\n'
+  export ENROLL_TOKEN
+  sudo --preserve-env=ENROLL_TOKEN bash ./scripts/install.sh node \
+    --token-file /root/.config/proxy-server-mono/github-token -- \
+    --manager https://manager.example.com --server node01.example.com --name node01 \
+    --hy2-port 443 --vless-port 443 \
+    --hysteria-binary "$HYSTERIA_BINARY" --hysteria-sha256 "$HYSTERIA_SHA256" \
+    --core-version "hysteria=$HYSTERIA_VERSION" \
+    --xray-binary "$XRAY_BINARY" --xray-sha256 "$XRAY_SHA256" \
+    --core-version "xray=$XRAY_VERSION"
+  unset ENROLL_TOKEN
+  ```
 
 ---
 

@@ -159,7 +159,7 @@ class BootstrapTest(unittest.TestCase):
         data['SHA256SUMS'] = sums.encode()
         return data
 
-    def run_bootstrap(self, role='manager', options=(), failure=False, extra=(), env_token=False, token_value=None):
+    def run_bootstrap(self, role='manager', options=(), failure=False, extra=(), env_token=False, token_value=None, raw_args=None):
         stage = self.base / ('stage-' + str(len(list(self.base.iterdir()))))
         environment = dict(os.environ)
         environment.pop('GITHUB_TOKEN', None)
@@ -173,7 +173,9 @@ class BootstrapTest(unittest.TestCase):
         else:
             command += ['--token-file', str(self.token_file)]
         command += ['--']
-        if role == 'manager':
+        if raw_args is not None:
+            command += list(raw_args)
+        elif role == 'manager':
             command += ['--public-url', 'https://manager.example.invalid']
         else:
             digest = hashlib.sha256(BINARY).hexdigest()
@@ -196,24 +198,50 @@ class BootstrapTest(unittest.TestCase):
                 self.assertEqual((stage / 'opt' / product / 'bin' / product).read_bytes(), elf(arch))
                 env_file = stage / 'etc' / product / ('manager.env' if role == 'manager' else 'node.env')
                 self.assertNotIn(READ_TOKEN, env_file.read_text())
-        return result
+        return result, stage
 
     def test_manager_staging_main_and_private_redirect(self):
-        self.assertIn('main-222222222222', self.run_bootstrap().stdout)
+        result, _ = self.run_bootstrap()
+        self.assertIn('main-222222222222', result.stdout)
         self.assertEqual(set(self.fixture['api_auth']), {'Bearer ' + READ_TOKEN})
         self.assertTrue(self.fixture['storage_auth'])
         self.assertEqual(set(self.fixture['storage_auth']), {None})
 
     def test_node_staging(self):
-        self.run_bootstrap(role='node')
+        _, stage = self.run_bootstrap(role='node')
+        self.assertTrue((stage / 'opt/proxy-server/bin/hysteria').exists())
+        self.assertTrue((stage / 'opt/proxy-server/bin/xray').exists())
+        self.assertTrue((stage / 'opt/proxy-server/core-versions').exists())
+
+    def test_node_adopt_existing_staging_and_conflict_rejection(self):
+        _, stage = self.run_bootstrap(
+            role='node',
+            raw_args=['--adopt-existing', '--manager', 'https://manager.example.invalid',
+                      '--server', '203.0.113.35', '--name', 'sg01'])
+        self.assertTrue((stage / 'opt/proxy-server/bin/proxy-server').exists())
+        self.assertFalse((stage / 'opt/proxy-server/bin/hysteria').exists())
+        self.assertFalse((stage / 'opt/proxy-server/bin/xray').exists())
+        self.assertFalse((stage / 'opt/proxy-server/core-versions').exists())
+
+        result, _ = self.run_bootstrap(
+            role='node', failure=True,
+            raw_args=['--adopt-existing', '--manager', 'https://manager.example.invalid',
+                      '--server', '203.0.113.35', '--name', 'sg01', '--hysteria-binary', str(self.core)])
+        self.assertIn('--adopt-existing cannot be combined', result.stderr)
+
+        result, _ = self.run_bootstrap(role='node', failure=True, extra=['--hysteria-unit', 'hysteria.service'])
+        self.assertIn('require --adopt-existing', result.stderr)
 
     def test_stable_and_pinned_release(self):
-        self.assertIn('v1.0.0', self.run_bootstrap(options=['--channel', 'stable']).stdout)
-        self.assertIn('main-111111111111', self.run_bootstrap(options=['--version', 'main-111111111111']).stdout)
+        result_stable, _ = self.run_bootstrap(options=['--channel', 'stable'])
+        self.assertIn('v1.0.0', result_stable.stdout)
+        result_pinned, _ = self.run_bootstrap(options=['--version', 'main-111111111111'])
+        self.assertIn('main-111111111111', result_pinned.stdout)
 
     def test_mismatched_checksum_does_not_install(self):
         self.fixture['bad_hash'] = True
-        self.assertIn('SHA256 verification failed', self.run_bootstrap(failure=True).stderr)
+        result, _ = self.run_bootstrap(failure=True)
+        self.assertIn('SHA256 verification failed', result.stderr)
 
     def test_unsafe_bundle_does_not_install(self):
         for unsafe in ('bad_tar', 'bad_path'):
@@ -224,15 +252,17 @@ class BootstrapTest(unittest.TestCase):
 
     def test_token_file_must_be_private(self):
         self.token_file.chmod(0o644)
-        self.assertIn('0600', self.run_bootstrap(failure=True).stderr)
+        result, _ = self.run_bootstrap(failure=True)
+        self.assertIn('0600', result.stderr)
         self.assertEqual(self.fixture['api_auth'], [])
 
     def test_wrong_architecture_does_not_install(self):
         self.fixture['wrong_arch'] = True
-        self.assertIn('ELF', self.run_bootstrap(failure=True).stderr)
+        result, _ = self.run_bootstrap(failure=True)
+        self.assertIn('ELF', result.stderr)
 
     def test_control_character_token_is_rejected_without_disclosure(self):
-        result = self.run_bootstrap(failure=True, env_token=True, token_value=READ_TOKEN + '\x01')
+        result, _ = self.run_bootstrap(failure=True, env_token=True, token_value=READ_TOKEN + '\x01')
         self.assertIn('Invalid GitHub token format', result.stderr)
         self.assertEqual(self.fixture['api_auth'], [])
 

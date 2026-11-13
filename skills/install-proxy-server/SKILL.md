@@ -15,30 +15,31 @@ description: 从 GitHub Release 下载、初始化或手动更新本仓库 Go �
 
 1. 明确管理端地址和节点对外地址。`manager_url` 使用 `https://管理域名或IP[:端口]`；`--server` 是客户端连接节点的域名/IP，不带 scheme/端口。使用 IP 的管理端证书必须包含对应 IP SAN，私有 CA 用 `--ca-file`，不关闭校验。
 2. 优先按发布指南经 GitHub Contents API 获取独立 `install.sh`。它下载并校验目标架构 Agent 及安装 bundle，无需源码目录、Go/Node或gh；安装阶段需要 Python3、OpenSSL和systemd工具，首次获取脚本需要curl。默认仓库 ByteLan/proxy-server-mono、main 渠道；`node --channel stable -- ...` 选择正式 release，`node --version TAG -- ...` 固定发布。私库 PAT 只选此仓库 Contents 只读，经 GITHUB_TOKEN / GH_TOKEN 或 `--token-file`（普通0600文件）提供，不放到命令参数或长期service env。
-3. 为 Hysteria2、Xray 分别从官方 release 选择固定版本、正确架构和可信的预期 SHA256；bootstrap 只下载 Agent，不自动下载/升级两个核心。不要使用 latest 或仅把下载文件现算出的 hash 视作发布者校验。通过安全交互向环境提供管理端 ENROLL_TOKEN，它与 GitHub PAT、ADMIN_TOKEN不同，不写在CLI参数、回复或日志中。已下载 install.sh 且安全设置 GITHUB_TOKEN / ENROLL_TOKEN 后，执行：
+3. 根据目标主机现状选择**方案 A（已有内核无感收编）**或**方案 B（纯新机器统一托管）**。通过安全交互向环境提供管理端 `ENROLL_TOKEN`，它与 GitHub PAT、`ADMIN_TOKEN` 不同，不写在 CLI 参数、回复或日志中：
 
-   ```bash
-   sudo --preserve-env=GITHUB_TOKEN,ENROLL_TOKEN bash ./install.sh node -- \
-     --manager https://manager.example.com --server node01.example.com --name node01 \
-     --hy2-port 443 --vless-port 443 \
-     --hysteria-binary "$HYSTERIA_BINARY" --hysteria-sha256 "$HYSTERIA_SHA256" \
-     --core-version "hysteria=$HYSTERIA_VERSION" \
-     --xray-binary "$XRAY_BINARY" --xray-sha256 "$XRAY_SHA256" \
-     --core-version "xray=$XRAY_VERSION"
-   ```
+   - **方案 A：主机已运行 `hysteria.service` / `xray.service`（推荐用 `--adopt-existing`，免重装内核、不改端口密码、不断连）**：
 
-   路径、版本、hash须替换为已选实际值。若自行构建（Go1.25+，见README）或已经备好源码相对目录，也可直接使用原安装器：
+     ```bash
+     sudo --preserve-env=GITHUB_TOKEN,ENROLL_TOKEN bash ./install.sh node -- \
+       --adopt-existing \
+       --manager https://manager.example.com --server node01.example.com --name node01
+     ```
+     *(非默认配置路径或 systemd unit 可附加 `--hysteria-config`、`--hysteria-unit`、`--xray-config`、`--xray-unit`；公开库无需 `GITHUB_TOKEN`。)*
 
-   ```bash
-   sudo --preserve-env=ENROLL_TOKEN bash scripts/install-proxy-server.sh \
-     --binary ./bin/proxy-server \
-     --manager https://manager.example.com --server node01.example.com --name node01 \
-     --hy2-port 443 --vless-port 443 \
-     --hysteria-binary "$HYSTERIA_BINARY" --hysteria-sha256 "$HYSTERIA_SHA256" \
-     --core-version "hysteria=$HYSTERIA_VERSION" \
-     --xray-binary "$XRAY_BINARY" --xray-sha256 "$XRAY_SHA256" \
-     --core-version "xray=$XRAY_VERSION"
-   ```
+   - **方案 B：纯新机器（安装固定版本核心并由 Agent 统一托管子进程）**：
+     为 Hysteria2、Xray 分别从官方 release 选择固定版本、正确架构和可信的预期 SHA256；bootstrap 只下载 Agent，不自动下载/升级两个核心。不要使用 `latest` 或仅把下载文件现算出的 hash 视作发布者校验：
+
+     ```bash
+     sudo --preserve-env=GITHUB_TOKEN,ENROLL_TOKEN bash ./install.sh node -- \
+       --manager https://manager.example.com --server node01.example.com --name node01 \
+       --hy2-port 443 --vless-port 443 \
+       --hysteria-binary "$HYSTERIA_BINARY" --hysteria-sha256 "$HYSTERIA_SHA256" \
+       --core-version "hysteria=$HYSTERIA_VERSION" \
+       --xray-binary "$XRAY_BINARY" --xray-sha256 "$XRAY_SHA256" \
+       --core-version "xray=$XRAY_VERSION"
+     ```
+
+   若自行构建（Go1.25+，见 README）或已经备好源码相对目录，也可直接调用 `scripts/install-proxy-server.sh --binary ./bin/proxy-server ...`（同样支持 `--adopt-existing` 或完整双核心参数）。
 
 4. 脚本校验两个 hash，安装到 `/opt/proxy-server/bin`，生成 `/etc/proxy-server/config.json` 与 `config.d`，再以受限系统用户启动。443 UDP 与 443 TCP 可共存但需确认无占用。配置与 token 是私密运行数据，不能提交到仓库；REALITY/TLS 私钥只在节点保存。
 5. 首次注册以 ENROLL_TOKEN 换取节点自己的 token（0600本地文件）；后续心跳使用节点 token。检查管理 UI 中节点 ID、公布地址、两个核心与最近心跳，再用 mihomo 客户端通过每个协议实际访问测试目标。不能用单纯的服务器 curl、端口监听或 agent 在线代替协议验证。
