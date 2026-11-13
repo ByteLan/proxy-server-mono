@@ -1,12 +1,15 @@
 package manager
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"crypto/tls"
+	"crypto/x509"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"github.com/cloudwego/hertz/pkg/app"
@@ -16,6 +19,7 @@ import (
 	"io/fs"
 	"mime"
 	"net/url"
+	"os"
 	"path"
 	"proxy-mono/internal/clash"
 	"proxy-mono/internal/model"
@@ -27,14 +31,15 @@ import (
 
 type Config struct {
 	Listen, DataDir, AdminToken, EnrollToken, PublicURL, MasterKey string
-	TLSCertFile, TLSKeyFile                                        string
+	TLSCertFile, TLSKeyFile, TLSCAFile                             string
 	HTTPSubListen, HTTPSubPublicURL                                string
 }
 type Server struct {
-	Store   *Store
-	Config  Config
-	HTTP    *server.Hertz
-	SubHTTP *server.Hertz
+	Store       *Store
+	Config      Config
+	HTTP        *server.Hertz
+	SubHTTP     *server.Hertz
+	publicCAPEM []byte
 }
 
 func validateOriginURL(raw, name string) (string, error) {
@@ -43,6 +48,38 @@ func validateOriginURL(raw, name string) (string, error) {
 		return "", fmt.Errorf("%s must be an http(s) origin, e.g. https://proxy.example.com", name)
 	}
 	return strings.TrimRight(raw, "/"), nil
+}
+
+func loadPublicCAPEM(file string) ([]byte, error) {
+	raw, err := os.ReadFile(file)
+	if err != nil {
+		return nil, fmt.Errorf("read TLS_CA_FILE: %w", err)
+	}
+	var out bytes.Buffer
+	rest := raw
+	count := 0
+	for len(bytes.TrimSpace(rest)) > 0 {
+		var blk *pem.Block
+		blk, rest = pem.Decode(rest)
+		if blk == nil {
+			return nil, fmt.Errorf("TLS_CA_FILE contains invalid PEM data")
+		}
+		if strings.Contains(blk.Type, "PRIVATE") {
+			return nil, fmt.Errorf("TLS_CA_FILE must not contain private keys")
+		}
+		if blk.Type != "CERTIFICATE" {
+			return nil, fmt.Errorf("TLS_CA_FILE must contain only CERTIFICATE blocks")
+		}
+		if _, err := x509.ParseCertificate(blk.Bytes); err != nil {
+			return nil, fmt.Errorf("parse TLS_CA_FILE certificate: %w", err)
+		}
+		_ = pem.Encode(&out, &pem.Block{Type: "CERTIFICATE", Bytes: blk.Bytes})
+		count++
+	}
+	if count == 0 {
+		return nil, fmt.Errorf("TLS_CA_FILE contains no certificates")
+	}
+	return out.Bytes(), nil
 }
 
 func New(c Config) (*Server, error) {
@@ -87,11 +124,20 @@ func New(c Config) (*Server, error) {
 		}
 		h = server.New(server.WithHostPorts(c.Listen), server.WithTransport(standard.NewTransporter), server.WithTLS(&tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{cert}}), server.WithMaxRequestBodySize(128<<10), server.WithReadTimeout(10*time.Second), server.WithWriteTimeout(15*time.Second), server.WithIdleTimeout(60*time.Second))
 	}
+	var publicCAPEM []byte
+	if c.TLSCAFile != "" {
+		caBytes, caErr := loadPublicCAPEM(c.TLSCAFile)
+		if caErr != nil {
+			store.Close()
+			return nil, caErr
+		}
+		publicCAPEM = caBytes
+	}
 	var subH *server.Hertz
 	if c.HTTPSubListen != "" {
 		subH = server.New(server.WithHostPorts(c.HTTPSubListen), server.WithTransport(standard.NewTransporter), server.WithMaxRequestBodySize(4<<10), server.WithReadTimeout(10*time.Second), server.WithWriteTimeout(15*time.Second), server.WithIdleTimeout(60*time.Second))
 	}
-	s := &Server{Store: store, Config: c, HTTP: h, SubHTTP: subH}
+	s := &Server{Store: store, Config: c, HTTP: h, SubHTTP: subH, publicCAPEM: publicCAPEM}
 	s.routes()
 	if s.SubHTTP != nil {
 		s.subOnlyRoutes()
@@ -136,6 +182,17 @@ func (s *Server) routes() {
 		c.Next(ctx)
 	})
 	h.GET("/healthz", func(_ context.Context, c *app.RequestContext) { c.JSON(200, utils.H{"ok": true}) })
+	h.GET("/api/public/meta", func(_ context.Context, c *app.RequestContext) {
+		c.JSON(200, utils.H{"ca_cert_available": len(s.publicCAPEM) > 0})
+	})
+	h.GET("/ca.crt", func(_ context.Context, c *app.RequestContext) {
+		if len(s.publicCAPEM) == 0 {
+			fail(c, 404, "CA certificate not configured")
+			return
+		}
+		c.Header("Content-Disposition", `attachment; filename="proxy-console-ca.crt"`)
+		c.Data(200, "application/x-x509-ca-cert", s.publicCAPEM)
+	})
 	admin := h.Group("/api/admin", s.admin)
 	admin.GET("/health", func(_ context.Context, c *app.RequestContext) { c.JSON(200, utils.H{"ok": true}) })
 	admin.GET("/nodes", func(_ context.Context, c *app.RequestContext) {

@@ -2,11 +2,18 @@ package manager
 
 import (
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"github.com/cloudwego/hertz/pkg/common/ut"
 	"gopkg.in/yaml.v3"
+	"math/big"
 	"os"
 	"path/filepath"
 	"proxy-mono/internal/clash"
@@ -14,6 +21,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 const adminTestToken = "admin-very-long-test-credential-123456789"
@@ -330,5 +338,71 @@ func TestRepeatableSubscriptionURLViewingAndDualPortHTTPSubListener(t *testing.T
 	newTok := strings.TrimPrefix(rotated.HTTPURL, "http://203.0.113.35:9080/sub/")
 	if ut.PerformRequest(s.SubHTTP.Engine, "GET", "/sub/"+newTok, nil).Code != 200 {
 		t.Fatal("new subscription token failed on SubHTTP after rotate")
+	}
+}
+
+func TestPublicCACertEndpointRejectsPrivateKeysAndStaysOffSubHTTP(t *testing.T) {
+	dir := t.TempDir()
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "test-ca"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &priv.PublicKey, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	keyDER, err := x509.MarshalECPrivateKey(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+
+	badPath := filepath.Join(dir, "bad.pem")
+	if err := os.WriteFile(badPath, append(append([]byte{}, certPEM...), keyPEM...), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(Config{Listen: "127.0.0.1:0", DataDir: filepath.Join(dir, "d1"), AdminToken: adminTestToken, EnrollToken: enrollTestToken, PublicURL: "https://203.0.113.35:9443", TLSCAFile: badPath}); err == nil {
+		t.Fatal("expected New to reject TLS_CA_FILE containing a private key")
+	}
+
+	caPath := filepath.Join(dir, "ca.crt")
+	if err := os.WriteFile(caPath, certPEM, 0644); err != nil {
+		t.Fatal(err)
+	}
+	s, err := New(Config{
+		Listen:           "127.0.0.1:0",
+		DataDir:          filepath.Join(dir, "d2"),
+		AdminToken:       adminTestToken,
+		EnrollToken:      enrollTestToken,
+		PublicURL:        "https://203.0.113.35:9443",
+		TLSCAFile:        caPath,
+		HTTPSubListen:    "127.0.0.1:19081",
+		HTTPSubPublicURL: "http://203.0.113.35:9080",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Store.Close() })
+
+	metaRes := ut.PerformRequest(s.HTTP.Engine, "GET", "/api/public/meta", nil)
+	if metaRes.Code != 200 || !bytes.Contains(metaRes.Result().Body(), []byte(`"ca_cert_available":true`)) {
+		t.Fatalf("unexpected /api/public/meta: %d %s", metaRes.Code, metaRes.Result().Body())
+	}
+	caRes := ut.PerformRequest(s.HTTP.Engine, "GET", "/ca.crt", nil)
+	if caRes.Code != 200 || !bytes.Equal(caRes.Result().Body(), certPEM) {
+		t.Fatalf("unexpected /ca.crt response: %d", caRes.Code)
+	}
+	if ut.PerformRequest(s.SubHTTP.Engine, "GET", "/ca.crt", nil).Code != 404 {
+		t.Fatal("SubHTTP must not expose /ca.crt")
 	}
 }

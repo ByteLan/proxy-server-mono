@@ -113,6 +113,7 @@ sudo bash ./install.sh manager -- \
 ```
 
 - **安全边界**：`9443`（HTTPS）承载管理后台 UI、`/api/admin/*` 与 `/api/agent/*`；`9080`（HTTP）在代码层硬隔离，**仅注册 `/sub/:token` 与 `/healthz`**。
+- **浏览器密码管理器与自签证书限制**：Chrome / Edge / Safari 在未受信任的自签 HTTPS 页面（地址栏显示红色“不安全”）会从内核层禁用密码保存弹窗。可将公开根证书复制为 `/etc/proxy-manage-server/ca.crt`（`0644`，严禁混入 `ca.key`）并在 `manager.env` 设置 `TLS_CA_FILE=/etc/proxy-manage-server/ca.crt`，登录页即展示 `/ca.crt` 一键下载入口供导入系统钥匙串信任；同时登录页内置「在此浏览器记住登录状态」勾选项，免导入证书也可持久免输。
 - **云防火墙必查**：在 GCP / AWS / 阿里云放行 `tcp:9443` 与 `tcp:9080` 时，务必核对实例自身的 `Network Tags` / 安全组是否与防火墙规则 `target-tags` 匹配。
 
 ---

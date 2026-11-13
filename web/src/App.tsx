@@ -37,10 +37,22 @@ const endpoint = (host: string, port: number) => `${host.includes(':') ? `[${hos
 const formatTime = (seconds: number) => seconds ? new Date(seconds * 1000).toLocaleString('zh-CN', { hour12: false }) : '尚无心跳';
 const messageOf = (error: unknown) => error instanceof Error ? error.message : '操作失败，请稍后重试。';
 
-function Login({ onLogin }: { onLogin: (token: string) => void }) {
+function Login({ onLogin }: { onLogin: (token: string, remember: boolean) => void }) {
   const [input, setInput] = useState('');
+  const [remember, setRemember] = useState(true);
+  const [caAvailable, setCaAvailable] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  useEffect(() => {
+    let active = true;
+    fetch('/api/public/meta')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: { ca_cert_available?: boolean } | null) => {
+        if (active && data?.ca_cert_available) setCaAvailable(true);
+      })
+      .catch(() => {});
+    return () => { active = false; };
+  }, []);
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const formToken = String(new FormData(event.currentTarget).get('password') || '').trim();
@@ -59,7 +71,8 @@ function Login({ onLogin }: { onLogin: (token: string) => void }) {
       } catch {
         // Ignore in non-secure contexts or browsers without PasswordCredential.
       }
-      onLogin(trimmed);
+      window.history.pushState({}, '', '/nodes');
+      onLogin(trimmed, remember);
     } catch (cause) { setError(messageOf(cause)); }
     finally { setBusy(false); }
   }
@@ -80,10 +93,7 @@ function Login({ onLogin }: { onLogin: (token: string) => void }) {
             name="username"
             autoComplete="username"
             defaultValue="admin"
-            readOnly
-            tabIndex={-1}
-            aria-hidden="true"
-            className="login-username-anchor"
+            style={{ display: 'none' }}
           />
           <label className="field-label" htmlFor="admin-token">管理令牌</label>
           <Input.Password
@@ -95,17 +105,24 @@ function Login({ onLogin }: { onLogin: (token: string) => void }) {
             onChange={setInput}
             size="large"
           />
+          <div className="login-remember">
+            <Checkbox checked={remember} onChange={setRemember}>在此浏览器记住登录状态（免重复输入）</Checkbox>
+          </div>
           {error && <div className="login-error" role="alert">{error}</div>}
           <Button type="primary" htmlType="submit" long size="large" loading={busy}>进入控制台 <IconArrowRight /></Button>
         </form>
-        <div className="login-note">支持浏览器密码管理器保存与自动填充；运行态令牌仅保存在当前标签页会话中。</div>
+        <div className="login-note">
+          {caAvailable ? <>
+            纯 IP 自签 HTTPS 未受系统信任时，浏览器会拦截内置密码箱弹窗；勾选上方记住登录即可免重复输入，或 <a href="/ca.crt" download="proxy-console-ca.crt">下载 HTTPS 根证书 (ca.crt)</a> 并在系统钥匙串设为「始终信任」以启用浏览器密码保存。
+          </> : '勾选记住登录状态可在当前浏览器持久免输；点击退出登录立即清除。'}
+        </div>
       </Card>
     </div><div className="login-footer">Proxy Console · 节点与订阅管理</div>
   </div>;
 }
 
 export default function App() {
-  const [token, setToken] = useState(() => sessionStorage.getItem(TOKEN_KEY) || '');
+  const [token, setToken] = useState(() => sessionStorage.getItem(TOKEN_KEY) || localStorage.getItem(TOKEN_KEY) || '');
   const [page, setPage] = useState<'nodes' | 'subscriptions'>('nodes');
   const [nodes, setNodes] = useState<ProxyNode[]>([]);
   const [subscriptions, setSubscriptions] = useState<Subscription[]>([]);
@@ -130,7 +147,9 @@ export default function App() {
   const mounted = useRef(true);
 
   const logout = useCallback(() => {
-    sessionStorage.removeItem(TOKEN_KEY); setToken(''); setNodes([]); setSubscriptions([]);
+    sessionStorage.removeItem(TOKEN_KEY); localStorage.removeItem(TOKEN_KEY);
+    window.history.replaceState({}, '', '/');
+    setToken(''); setNodes([]); setSubscriptions([]);
     setNodeEditor(null); setSubEditor(null); setLinkSub(null); setPreview(null); setSelectedIDs([]);
   }, []);
 
@@ -166,7 +185,12 @@ export default function App() {
     return () => { mounted.current = false; window.clearInterval(timer); };
   }, [token, refresh]);
 
-  function login(value: string) { sessionStorage.setItem(TOKEN_KEY, value); setToken(value); }
+  function login(value: string, remember: boolean) {
+    sessionStorage.setItem(TOKEN_KEY, value);
+    if (remember) localStorage.setItem(TOKEN_KEY, value);
+    else localStorage.removeItem(TOKEN_KEY);
+    setToken(value);
+  }
   function openNode(node: ProxyNode) { setNodeEditor(node); setNodeName(node.name); setNodeEnabled(node.enabled); }
   function openSub(sub: Subscription | 'new') {
     setSubEditor(sub); setSubName(sub === 'new' ? '' : sub.name);

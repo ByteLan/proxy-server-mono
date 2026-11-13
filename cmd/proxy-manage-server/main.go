@@ -43,7 +43,7 @@ func execute(ctx context.Context, args []string, output io.Writer) error {
 	flags := flag.NewFlagSet("proxy-manage-server", flag.ContinueOnError)
 	flags.SetOutput(output)
 	flags.Usage = func() {
-		fmt.Fprint(output, "Usage: proxy-manage-server [version | update [options]]\nSQLite control plane, embedded UI and dynamic Clash subscriptions. No proxy traffic.\nConfiguration via environment:\n  LISTEN (127.0.0.1:8080)\n  DATA_DIR (./data)\n  PUBLIC_URL (http://127.0.0.1:8080)\n  ADMIN_TOKEN (required, >=24 characters)\n  ENROLL_TOKEN (required, distinct, >=24 characters)\n  MASTER_KEY (optional base64 32 bytes; otherwise DATA_DIR/master.key)\n  TLS_CERT_FILE / TLS_KEY_FILE (optional pair, enables direct HTTPS)\n  HTTP_SUB_LISTEN / HTTP_SUB_PUBLIC_URL (optional pair, exposes read-only /sub/:token over HTTP for IP-only Clash clients)\n  GOMEMLIMIT (default 192MiB)\n")
+		fmt.Fprint(output, "Usage: proxy-manage-server [version | update [options]]\nSQLite control plane, embedded UI and dynamic Clash subscriptions. No proxy traffic.\nConfiguration via environment:\n  LISTEN (127.0.0.1:8080)\n  DATA_DIR (./data)\n  PUBLIC_URL (http://127.0.0.1:8080)\n  ADMIN_TOKEN (required, >=24 characters)\n  ENROLL_TOKEN (required, distinct, >=24 characters)\n  MASTER_KEY (optional base64 32 bytes; otherwise DATA_DIR/master.key)\n  TLS_CERT_FILE / TLS_KEY_FILE (optional pair, enables direct HTTPS)\n  TLS_CA_FILE (optional public root CA certificate served at /ca.crt for browser trust)\n  HTTP_SUB_LISTEN / HTTP_SUB_PUBLIC_URL (optional pair, exposes read-only /sub/:token over HTTP for IP-only Clash clients)\n  GOMEMLIMIT (default 192MiB)\n")
 	}
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -66,6 +66,7 @@ func execute(ctx context.Context, args []string, output io.Writer) error {
 		MasterKey:        os.Getenv("MASTER_KEY"),
 		TLSCertFile:      os.Getenv("TLS_CERT_FILE"),
 		TLSKeyFile:       os.Getenv("TLS_KEY_FILE"),
+		TLSCAFile:        os.Getenv("TLS_CA_FILE"),
 		HTTPSubListen:    os.Getenv("HTTP_SUB_LISTEN"),
 		HTTPSubPublicURL: os.Getenv("HTTP_SUB_PUBLIC_URL"),
 	})
