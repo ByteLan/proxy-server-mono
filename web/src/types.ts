@@ -52,3 +52,13 @@ export interface Subscription {
 }
 
 export type SubscriptionInput = Pick<Subscription, 'name' | 'node_ids' | 'protocols' | 'routes' | 'enabled'>;
+
+export interface OnboardingDefaults {
+  public_url: string;
+  http_sub_public_url?: string;
+  enroll_token: string;
+  ca_cert_available: boolean;
+  ca_cert_pem?: string;
+  version: string;
+  default_repo: string;
+}

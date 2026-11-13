@@ -5,11 +5,15 @@ import {
 } from '@arco-design/web-react';
 import type { TableColumnProps } from '@arco-design/web-react';
 import {
-  IconApps, IconArrowRight, IconCheckCircle, IconCopy, IconDesktop,
+  IconApps, IconArrowRight, IconCheckCircle, IconCode, IconCommand, IconCopy, IconDesktop,
   IconLink, IconPlus, IconPoweroff, IconRefresh, IconSearch, IconSettings,
 } from '@arco-design/web-react/icon';
 import { APIError, request } from './api';
-import type { ProxyNode, SiteRoutes, Subscription, SubscriptionInput } from './types';
+import {
+  buildOnboardingMarkdown, buildOnboardingSteps, createInitialOnboardingForm,
+  suggestNextNodeName, type OnboardingForm, type OnboardingMode, type ReleaseChannel,
+} from './onboarding';
+import type { OnboardingDefaults, ProxyNode, SiteRoutes, Subscription, SubscriptionInput } from './types';
 
 const TOKEN_KEY = 'proxy-console-admin-token';
 const protocolOptions = [
@@ -121,11 +125,311 @@ function Login({ onLogin }: { onLogin: (token: string, remember: boolean) => voi
   </div>;
 }
 
+function OnboardingGuide({
+  defaults,
+  nodes,
+  onCopy,
+}: {
+  defaults: OnboardingDefaults | null;
+  nodes: ProxyNode[];
+  onCopy: (value: string, successText?: string) => Promise<void>;
+}) {
+  const [form, setForm] = useState<OnboardingForm>(() => createInitialOnboardingForm(defaults, nodes));
+  const [dirtyFields, setDirtyFields] = useState<Record<string, boolean>>({});
+  const [showCAPem, setShowCAPem] = useState(false);
+  const [viewMode, setViewMode] = useState<'steps' | 'markdown'>('steps');
+  const [previewWithToken, setPreviewWithToken] = useState(false);
+
+  useEffect(() => {
+    if (!defaults) return;
+    const fresh = createInitialOnboardingForm(defaults, nodes);
+    setForm((prev) => ({
+      ...prev,
+      managerUrl: dirtyFields.managerUrl ? prev.managerUrl : fresh.managerUrl,
+      enrollToken: dirtyFields.enrollToken ? prev.enrollToken : fresh.enrollToken,
+      usePrivateCA: dirtyFields.usePrivateCA ? prev.usePrivateCA : fresh.usePrivateCA,
+      caCertPem: dirtyFields.caCertPem ? prev.caCertPem : fresh.caCertPem,
+      repo: dirtyFields.repo ? prev.repo : fresh.repo,
+      pinnedVersion: dirtyFields.pinnedVersion ? prev.pinnedVersion : fresh.pinnedVersion,
+    }));
+  }, [defaults, nodes, dirtyFields]);
+
+  useEffect(() => {
+    if (dirtyFields.nodeName) return;
+    setForm((prev) => ({ ...prev, nodeName: suggestNextNodeName(nodes) }));
+  }, [nodes, dirtyFields.nodeName]);
+
+  function updateField<K extends keyof OnboardingForm>(key: K, value: OnboardingForm[K]) {
+    setDirtyFields((prev) => ({ ...prev, [key]: true }));
+    setForm((prev) => ({ ...prev, [key]: value }));
+  }
+
+  function resetDefaults() {
+    setDirtyFields({});
+    setForm(createInitialOnboardingForm(defaults, nodes));
+    Message.success('已恢复自动检测的默认参数');
+  }
+
+  const steps = useMemo(() => buildOnboardingSteps(form), [form]);
+  const markdownPreview = useMemo(
+    () => buildOnboardingMarkdown(form, previewWithToken),
+    [form, previewWithToken],
+  );
+
+  return <div className="onboarding-wrap">
+    <Card bordered={false} className="content-card onboarding-config-card">
+      <div className="table-toolbar">
+        <div>
+          <h2>动态接入参数配置 <Tag bordered={false} color="green">已自动预填本机信息</Tag></h2>
+          <p>修改任意输入框后，下方操作步骤与导出的 Agent Markdown 任务书都会实时替换。</p>
+        </div>
+        <Space wrap>
+          <Button onClick={resetDefaults}>恢复自动检测值</Button>
+          <Button icon={<IconCopy />} onClick={() => void onCopy(buildOnboardingMarkdown(form, false), '已复制脱敏 Markdown')}>
+            复制脱敏 Markdown
+          </Button>
+          <Button
+            type="primary"
+            icon={<IconCopy />}
+            onClick={() => void onCopy(buildOnboardingMarkdown(form, true), '已复制完整 Markdown（可直接粘贴给 Agent 执行）')}
+          >
+            复制完整 Markdown（给 Agent）
+          </Button>
+        </Space>
+      </div>
+
+      <div className="onboarding-form-body">
+        <div className="onboarding-mode-bar">
+          <label className="field-label">接入场景（与仓库节点安装 Skill 严格对齐）</label>
+          <Radio.Group
+            type="button"
+            value={form.mode}
+            onChange={(val) => updateField('mode', val as OnboardingMode)}
+            options={[
+              { label: '方案 A：存量内核无感收编 (--adopt-existing · 推荐)', value: 'adopt' },
+              { label: '方案 B：纯新机器全套部署 (BBR + 官方双核)', value: 'fresh' },
+              { label: '场景 C：已有节点接入本管理端 (add-manager)', value: 'add-manager' },
+            ]}
+          />
+        </div>
+
+        <div className="onboarding-grid">
+          <div>
+            <label className="field-label" htmlFor="ob-manager-url">本管理端地址 (--manager)</label>
+            <Input
+              id="ob-manager-url"
+              placeholder="https://34.124.212.35:9443"
+              value={form.managerUrl}
+              onChange={(v) => updateField('managerUrl', v)}
+            />
+          </div>
+          <div>
+            <label className="field-label" htmlFor="ob-enroll-token">本管理端准入令牌 (ENROLL_TOKEN)</label>
+            <div className="inline-input-action">
+              <Input.Password
+                id="ob-enroll-token"
+                autoComplete="off"
+                placeholder="自动读取当前管理端 ENROLL_TOKEN"
+                value={form.enrollToken}
+                onChange={(v) => updateField('enrollToken', v)}
+              />
+              <Button icon={<IconCopy />} onClick={() => void onCopy(form.enrollToken, '准入令牌已复制')}>复制</Button>
+            </div>
+          </div>
+          <div>
+            <label className="field-label" htmlFor="ob-node-name">新节点名称 (--name)</label>
+            <Input
+              id="ob-node-name"
+              placeholder="例如 sg01 / us01 / jp01"
+              value={form.nodeName}
+              onChange={(v) => updateField('nodeName', v)}
+            />
+          </div>
+          <div>
+            <label className="field-label" htmlFor="ob-node-host">代理节点公网 IP 或域名 (--server)</label>
+            <Input
+              id="ob-node-host"
+              placeholder="例如 203.0.113.10（留空则保留占位符）"
+              value={form.nodeHost}
+              onChange={(v) => updateField('nodeHost', v)}
+            />
+          </div>
+          <div>
+            <label className="field-label" htmlFor="ob-ssh">目标机 SSH 用户名 / 端口（用于生成连接提示）</label>
+            <div className="ssh-pair">
+              <Input id="ob-ssh" placeholder="root" value={form.sshUser} onChange={(v) => updateField('sshUser', v)} />
+              <Input placeholder="22" value={form.sshPort} onChange={(v) => updateField('sshPort', v)} style={{ width: 110 }} />
+            </div>
+          </div>
+          <div>
+            <label className="field-label" htmlFor="ob-repo">GitHub Release 仓库与发布渠道</label>
+            <div className="ssh-pair">
+              <Input id="ob-repo" value={form.repo} onChange={(v) => updateField('repo', v)} />
+              <Select
+                value={form.channel}
+                onChange={(v) => updateField('channel', v as ReleaseChannel)}
+                style={{ width: 155 }}
+                options={[
+                  { label: 'main 预发布', value: 'main' },
+                  { label: 'stable 正式版', value: 'stable' },
+                  { label: '固定 Tag', value: 'pinned' },
+                ]}
+              />
+            </div>
+          </div>
+          {form.channel === 'pinned' && (
+            <div>
+              <label className="field-label" htmlFor="ob-pin-ver">指定发布版本 Tag (--version)</label>
+              <Input
+                id="ob-pin-ver"
+                placeholder="例如 main-xxxxxxxxxxxx 或 v1.0.0"
+                value={form.pinnedVersion}
+                onChange={(v) => updateField('pinnedVersion', v)}
+              />
+            </div>
+          )}
+        </div>
+
+        {form.mode === 'adopt' && (
+          <div className="onboarding-subgrid">
+            <div>
+              <label className="field-label">存量 Hysteria systemd 单元</label>
+              <Input value={form.hysteriaUnit} onChange={(v) => updateField('hysteriaUnit', v)} />
+            </div>
+            <div>
+              <label className="field-label">存量 Hysteria 配置路径</label>
+              <Input value={form.hysteriaConfig} onChange={(v) => updateField('hysteriaConfig', v)} />
+            </div>
+            <div>
+              <label className="field-label">存量 Xray systemd 单元</label>
+              <Input value={form.xrayUnit} onChange={(v) => updateField('xrayUnit', v)} />
+            </div>
+            <div>
+              <label className="field-label">存量 Xray 配置路径</label>
+              <Input value={form.xrayConfig} onChange={(v) => updateField('xrayConfig', v)} />
+            </div>
+          </div>
+        )}
+
+        {form.mode === 'fresh' && (
+          <div className="onboarding-subgrid">
+            <div>
+              <label className="field-label">Hysteria2 UDP 端口 (--hy2-port)</label>
+              <Input value={form.hy2Port} onChange={(v) => updateField('hy2Port', v)} />
+            </div>
+            <div>
+              <label className="field-label">VLESS TCP 端口 (--vless-port)</label>
+              <Input value={form.vlessPort} onChange={(v) => updateField('vlessPort', v)} />
+            </div>
+            <div>
+              <label className="field-label">Hysteria2 固定版本</label>
+              <Input value={form.hysteriaVersion} onChange={(v) => updateField('hysteriaVersion', v)} />
+            </div>
+            <div>
+              <label className="field-label">Xray 固定版本</label>
+              <Input value={form.xrayVersion} onChange={(v) => updateField('xrayVersion', v)} />
+            </div>
+          </div>
+        )}
+
+        <div className="onboarding-switches">
+          <Space size={24} wrap>
+            <Checkbox checked={form.usePrivateCA} onChange={(v) => updateField('usePrivateCA', v)}>
+              管理端使用私有 CA / 纯 IP 自签证书（自动生成 `--ca-file` 信任步骤）
+            </Checkbox>
+            {form.usePrivateCA && (
+              <Button type="text" size="mini" onClick={() => setShowCAPem((v) => !v)}>
+                {showCAPem ? '收起根证书内容' : '查看 / 编辑根证书 PEM'}
+              </Button>
+            )}
+            <Checkbox checked={form.privateRepo} onChange={(v) => updateField('privateRepo', v)}>
+              私有 GitHub 仓库（需要只读 GITHUB_TOKEN）
+            </Checkbox>
+          </Space>
+        </div>
+
+        {form.usePrivateCA && showCAPem && (
+          <div className="ca-pem-editor">
+            <label className="field-label">管理端公开根证书 (ca.crt PEM，严禁填入私钥)</label>
+            <Input.TextArea
+              autoSize={{ minRows: 4, maxRows: 8 }}
+              value={form.caCertPem}
+              onChange={(v) => updateField('caCertPem', v)}
+            />
+          </div>
+        )}
+      </div>
+    </Card>
+
+    <Card bordered={false} className="content-card onboarding-steps-card">
+      <div className="table-toolbar">
+        <div>
+          <h2>标准部署与自启核验流程 <Tag bordered={false}>{steps.length} 步</Tag></h2>
+          <p>涵盖环境只读探测、证书信任、安装/收编注册、开机自启顺序（Wants+After）与 10 次退避自愈核验。</p>
+        </div>
+        <Space wrap>
+          {viewMode === 'markdown' && (
+            <Checkbox checked={previewWithToken} onChange={setPreviewWithToken}>
+              预览中显示真实 ENROLL_TOKEN
+            </Checkbox>
+          )}
+          <Radio.Group
+            type="button"
+            value={viewMode}
+            onChange={(val) => setViewMode(val as 'steps' | 'markdown')}
+            options={[
+              { label: '分步操作视图（适合人工）', value: 'steps' },
+              { label: 'Markdown 源码（适合 Agent）', value: 'markdown' },
+            ]}
+          />
+        </Space>
+      </div>
+
+      {viewMode === 'steps' ? (
+        <div className="step-list">
+          {steps.map((item) => (
+            <div className="step-item" key={item.step}>
+              <div className="step-item-head">
+                <div className="step-title-group">
+                  <span className="step-badge">STEP {item.step}</span>
+                  <h3>{item.title}</h3>
+                </div>
+                <Button size="small" icon={<IconCopy />} onClick={() => void onCopy(item.code, `Step ${item.step} 命令已复制`)}>
+                  复制命令
+                </Button>
+              </div>
+              <p className="step-summary">{item.summary}</p>
+              <pre className="step-code">{item.code}</pre>
+              {item.note && <div className="step-note">{item.note}</div>}
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="markdown-preview-box">
+          <div className="markdown-preview-bar">
+            <span className="muted"><IconCode /> 可直接粘贴给 Antigravity / Claude Code / Codex 自动登录目标机完成探测、安装与开机自启核验</span>
+            <Space>
+              <Button size="small" icon={<IconCopy />} onClick={() => void onCopy(buildOnboardingMarkdown(form, false), '已复制脱敏 Markdown')}>
+                复制脱敏版
+              </Button>
+              <Button size="small" type="primary" icon={<IconCopy />} onClick={() => void onCopy(buildOnboardingMarkdown(form, true), '已复制含准入令牌的完整 Markdown')}>
+                复制 Agent 执行版（含 ENROLL_TOKEN）
+              </Button>
+            </Space>
+          </div>
+          <pre className="yaml-preview">{markdownPreview}</pre>
+        </div>
+      )}
+    </Card>
+  </div>;
+}
+
 export default function App() {
   const [token, setToken] = useState(() => sessionStorage.getItem(TOKEN_KEY) || localStorage.getItem(TOKEN_KEY) || '');
-  const [page, setPage] = useState<'nodes' | 'subscriptions'>('nodes');
+  const [page, setPage] = useState<'nodes' | 'subscriptions' | 'onboarding'>('nodes');
   const [nodes, setNodes] = useState<ProxyNode[]>([]);
   const [subscriptions, setSubscriptions] = useState<Subscription[]>([]);
+  const [onboardingDefaults, setOnboardingDefaults] = useState<OnboardingDefaults | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
   const [updatedAt, setUpdatedAt] = useState('');
@@ -149,7 +453,7 @@ export default function App() {
   const logout = useCallback(() => {
     sessionStorage.removeItem(TOKEN_KEY); localStorage.removeItem(TOKEN_KEY);
     window.history.replaceState({}, '', '/');
-    setToken(''); setNodes([]); setSubscriptions([]);
+    setToken(''); setNodes([]); setSubscriptions([]); setOnboardingDefaults(null);
     setNodeEditor(null); setSubEditor(null); setLinkSub(null); setPreview(null); setSelectedIDs([]);
   }, []);
 
@@ -181,6 +485,9 @@ export default function App() {
     mounted.current = true;
     if (!token) return;
     void refresh(true);
+    request<OnboardingDefaults>(token, '/onboarding')
+      .then((info) => { if (mounted.current) setOnboardingDefaults(info); })
+      .catch(() => {});
     const timer = window.setInterval(() => void refresh(), 15000);
     return () => { mounted.current = false; window.clearInterval(timer); };
   }, [token, refresh]);
@@ -292,8 +599,8 @@ export default function App() {
       setPreview({ name: sub.name, yaml });
     } catch (error) { handleError(error); }
   }
-  async function copy(value: string) {
-    try { await navigator.clipboard.writeText(value); Message.success('已复制'); }
+  async function copy(value: string, successText = '已复制') {
+    try { await navigator.clipboard.writeText(value); Message.success(successText); }
     catch { Message.warning('当前浏览器无法自动复制，请手动选择文本复制。'); }
   }
   function downloadYAML() {
@@ -359,31 +666,61 @@ export default function App() {
     { title: '操作', width: 300, fixed: 'right', render: (_, sub) => <Space size={1}><Button type="text" size="small" onClick={() => setLinkSub(sub)}>查看链接</Button><Button type="text" size="small" onClick={() => openSub(sub)}>编辑分流</Button><Button type="text" size="small" onClick={() => void previewSub(sub)}>预览</Button><Button type="text" size="small" onClick={() => confirmRotateSub(sub)}>重置链接</Button><Button type="text" status="danger" size="small" onClick={() => Modal.confirm({ title: `删除订阅「${sub.name}」？`, content: '订阅链接将失效，Clash Verge 将无法继续从这个链接更新。', okText: '删除订阅', okButtonProps: { status: 'danger' }, onOk: () => removeSub(sub) })}>删除</Button></Space> },
   ];
 
+  const pageTitle = page === 'nodes' ? '代理节点' : page === 'subscriptions' ? '订阅管理' : '节点接入指南';
+  const pageEyebrow = page === 'nodes' ? 'NODE INVENTORY' : page === 'subscriptions' ? 'SUBSCRIPTION PROFILES' : 'NODE ONBOARDING & AGENT PLAYBOOK';
+  const pageSubtitle = page === 'nodes'
+    ? '集中查看节点状态，选择需要分发到客户端的代理服务器。'
+    : page === 'subscriptions'
+      ? '为通用访问与 Claude / ChatGPT / Google 分配专属纯净节点，同一订阅链接动态生效。'
+      : '自动预填本管理端地址、根证书与准入令牌，支持一键导出完整 Markdown 供人工运维或 AI Agent 直接执行安装与自启配置。';
+
   if (!token) return <Login onLogin={login} />;
   return <div className="app-shell">
     <aside className="sidebar">
       <div className="brand"><div className="brand-mark"><IconApps /></div><div>Proxy Console<small>节点与订阅管理</small></div></div>
       <div className="nav-label">WORKSPACE</div>
-      <nav aria-label="主导航"><button className={page === 'nodes' ? 'active' : ''} onClick={() => setPage('nodes')}><IconDesktop /><span>代理节点</span><small>{nodes.length}</small></button><button className={page === 'subscriptions' ? 'active' : ''} onClick={() => setPage('subscriptions')}><IconLink /><span>订阅管理</span><small>{subscriptions.length}</small></button></nav>
+      <nav aria-label="主导航">
+        <button className={page === 'nodes' ? 'active' : ''} onClick={() => setPage('nodes')}><IconDesktop /><span>代理节点</span><small>{nodes.length}</small></button>
+        <button className={page === 'subscriptions' ? 'active' : ''} onClick={() => setPage('subscriptions')}><IconLink /><span>订阅管理</span><small>{subscriptions.length}</small></button>
+        <button className={page === 'onboarding' ? 'active' : ''} onClick={() => setPage('onboarding')}><IconCommand /><span>节点接入指南</span></button>
+      </nav>
       <div className="sidebar-bottom"><div className="side-status"><span className="tiny-dot green" /> SQLite · 轻量运行</div><p>管理服务只负责节点和配置，<br />代理流量由节点直接处理。</p><Button type="text" icon={<IconPoweroff />} onClick={logout}>退出登录</Button></div>
     </aside>
     <div className="workspace">
-      <header className="topbar"><span>工作空间 <span className="breadcrumb-slash">/</span> <strong>{page === 'nodes' ? '代理节点' : '订阅管理'}</strong></span><div className="admin-pill"><span className="avatar">A</span> 管理员</div></header>
+      <header className="topbar"><span>工作空间 <span className="breadcrumb-slash">/</span> <strong>{pageTitle}</strong></span><div className="admin-pill"><span className="avatar">A</span> 管理员</div></header>
       <main>
-        <div className="page-heading"><div><div className="eyebrow">{page === 'nodes' ? 'NODE INVENTORY' : 'SUBSCRIPTION PROFILES'}</div><h1>{page === 'nodes' ? '代理节点' : '订阅管理'}</h1><p>{page === 'nodes' ? '集中查看节点状态，选择需要分发到客户端的代理服务器。' : '为通用访问与 Claude / ChatGPT / Google 分配专属纯净节点，同一订阅链接动态生效。'}</p></div><Button type="primary" size="large" icon={<IconPlus />} onClick={() => openSub('new')}>创建订阅</Button></div>
-        <div className="stats-grid">
-          {[{ title: '全部节点', value: nodes.length, note: '已接入管理服务', icon: <IconDesktop /> }, { title: '心跳在线', value: nodes.filter((node) => node.online).length, note: '以 Agent 上报为准', icon: <IconCheckCircle /> }, { title: '协议入口', value: nodes.reduce((sum, node) => sum + node.endpoints.length, 0), note: '一个节点支持多个入口', icon: <IconApps /> }, { title: '有效订阅', value: subscriptions.filter((sub) => sub.enabled).length, note: 'Clash Verge 可定期更新', icon: <IconLink /> }].map((stat) => <Card bordered={false} className="stat-card" key={stat.title}><div className="stat-top"><span>{stat.title}</span><span className="stat-icon">{stat.icon}</span></div><div className="stat-number">{stat.value.toString().padStart(2, '0')}</div><div className="muted">{stat.note}</div></Card>)}
+        <div className="page-heading">
+          <div>
+            <div className="eyebrow">{pageEyebrow}</div>
+            <h1>{pageTitle}</h1>
+            <p>{pageSubtitle}</p>
+          </div>
+          {page !== 'onboarding' && (
+            <Space>
+              {page === 'nodes' && <Button size="large" icon={<IconCommand />} onClick={() => setPage('onboarding')}>接入新节点</Button>}
+              <Button type="primary" size="large" icon={<IconPlus />} onClick={() => openSub('new')}>创建订阅</Button>
+            </Space>
+          )}
         </div>
-        {loadError && <Alert className="load-error" type="error" title={loadError} content="暂时无法刷新数据，下面可能是上次成功获取的状态。" />}
-        <Card bordered={false} className="content-card">
-          <div className="table-toolbar"><div><h2>{page === 'nodes' ? '节点列表' : '订阅列表'}<Tag bordered={false}>{page === 'nodes' ? nodes.length : subscriptions.length}</Tag></h2><p>{page === 'nodes' ? '心跳在线与代理核心状态独立展示。' : '编辑节点与专属分流后无需更换链接，在 Clash Verge 中更新订阅即可。'}</p></div><Space wrap>{page === 'nodes' && <Input aria-label="搜索节点" allowClear prefix={<IconSearch />} placeholder="搜索节点名称或地址" value={search} onChange={setSearch} style={{ width: 220 }} />}<Tooltip content="每 15 秒自动刷新"><Button aria-label="刷新数据" icon={<IconRefresh />} loading={loading} onClick={() => void refresh(true)}>刷新</Button></Tooltip></Space></div>
-          {page === 'nodes' && selectedIDs.length > 0 && <div className="selection-bar"><span>已选择 <strong>{selectedIDs.length}</strong> 个节点</span><Space><Button size="small" type="text" onClick={() => setSelectedIDs([])}>取消选择</Button><Button size="small" type="primary" onClick={() => openSub('new')}>用所选节点创建订阅</Button></Space></div>}
-          <Spin loading={loading} style={{ display: 'block' }}>
-            {page === 'nodes' ? <Table rowKey="id" columns={nodeColumns} data={filteredNodes} scroll={{ x: 1170 }} pagination={{ pageSize: 10, sizeCanChange: true, showTotal: true }} rowSelection={{ selectedRowKeys: selectedIDs, onChange: (keys) => setSelectedIDs(keys.map(String)) }} noDataElement={<Empty description={search ? '没有匹配的节点，试试其他关键词。' : '暂无节点。安装 proxy-server 并注册后，节点会出现在这里。'} />} /> : <Table rowKey="id" columns={subColumns} data={subscriptions} scroll={{ x: 1375 }} pagination={{ pageSize: 10, showTotal: true }} noDataElement={<Empty description="还没有订阅。创建订阅，选择要分发到 Clash Verge 的节点。" />} />}
-          </Spin>
-          <div className="table-footer"><span><span className="tiny-dot green" /> 自动刷新 · 每 15 秒</span><span>{updatedAt ? `最后刷新 ${updatedAt}` : '正在连接管理服务'}</span></div>
-        </Card>
-        <div className="context-note"><IconCheckCircle /><span>{page === 'nodes' ? '心跳在线表示 Agent 可以连接管理端；真实代理可用性仍取决于客户端网络。临时离线不会自动移除订阅中的节点。' : '专属分组使用 url-test 自动选择最低延迟协议，且组内节点全部失效时自动 REJECT 禁止直连；全局模式（GLOBAL）默认跟随 🌍 代理节点。'}</span></div>
+        {page === 'onboarding' ? (
+          <OnboardingGuide defaults={onboardingDefaults} nodes={nodes} onCopy={copy} />
+        ) : (
+          <>
+            <div className="stats-grid">
+              {[{ title: '全部节点', value: nodes.length, note: '已接入管理服务', icon: <IconDesktop /> }, { title: '心跳在线', value: nodes.filter((node) => node.online).length, note: '以 Agent 上报为准', icon: <IconCheckCircle /> }, { title: '协议入口', value: nodes.reduce((sum, node) => sum + node.endpoints.length, 0), note: '一个节点支持多个入口', icon: <IconApps /> }, { title: '有效订阅', value: subscriptions.filter((sub) => sub.enabled).length, note: 'Clash Verge 可定期更新', icon: <IconLink /> }].map((stat) => <Card bordered={false} className="stat-card" key={stat.title}><div className="stat-top"><span>{stat.title}</span><span className="stat-icon">{stat.icon}</span></div><div className="stat-number">{stat.value.toString().padStart(2, '0')}</div><div className="muted">{stat.note}</div></Card>)}
+            </div>
+            {loadError && <Alert className="load-error" type="error" title={loadError} content="暂时无法刷新数据，下面可能是上次成功获取的状态。" />}
+            <Card bordered={false} className="content-card">
+              <div className="table-toolbar"><div><h2>{page === 'nodes' ? '节点列表' : '订阅列表'}<Tag bordered={false}>{page === 'nodes' ? nodes.length : subscriptions.length}</Tag></h2><p>{page === 'nodes' ? '心跳在线与代理核心状态独立展示。' : '编辑节点与专属分流后无需更换链接，在 Clash Verge 中更新订阅即可。'}</p></div><Space wrap>{page === 'nodes' && <Input aria-label="搜索节点" allowClear prefix={<IconSearch />} placeholder="搜索节点名称或地址" value={search} onChange={setSearch} style={{ width: 220 }} />}<Tooltip content="每 15 秒自动刷新"><Button aria-label="刷新数据" icon={<IconRefresh />} loading={loading} onClick={() => void refresh(true)}>刷新</Button></Tooltip></Space></div>
+              {page === 'nodes' && selectedIDs.length > 0 && <div className="selection-bar"><span>已选择 <strong>{selectedIDs.length}</strong> 个节点</span><Space><Button size="small" type="text" onClick={() => setSelectedIDs([])}>取消选择</Button><Button size="small" type="primary" onClick={() => openSub('new')}>用所选节点创建订阅</Button></Space></div>}
+              <Spin loading={loading} style={{ display: 'block' }}>
+                {page === 'nodes' ? <Table rowKey="id" columns={nodeColumns} data={filteredNodes} scroll={{ x: 1170 }} pagination={{ pageSize: 10, sizeCanChange: true, showTotal: true }} rowSelection={{ selectedRowKeys: selectedIDs, onChange: (keys) => setSelectedIDs(keys.map(String)) }} noDataElement={<Empty description={search ? '没有匹配的节点，试试其他关键词。' : <span>暂无节点。前往 <a href="#onboarding" onClick={(e) => { e.preventDefault(); setPage('onboarding'); }}>节点接入指南</a> 获取一键安装与收编命令。</span>} />} /> : <Table rowKey="id" columns={subColumns} data={subscriptions} scroll={{ x: 1375 }} pagination={{ pageSize: 10, showTotal: true }} noDataElement={<Empty description="还没有订阅。创建订阅，选择要分发到 Clash Verge 的节点。" />} />}
+              </Spin>
+              <div className="table-footer"><span><span className="tiny-dot green" /> 自动刷新 · 每 15 秒</span><span>{updatedAt ? `最后刷新 ${updatedAt}` : '正在连接管理服务'}</span></div>
+            </Card>
+            <div className="context-note"><IconCheckCircle /><span>{page === 'nodes' ? '心跳在线表示 Agent 可以连接管理端；真实代理可用性仍取决于客户端网络。临时离线不会自动移除订阅中的节点。' : '专属分组使用 url-test 自动选择最低延迟协议，且组内节点全部失效时自动 REJECT 禁止直连；全局模式（GLOBAL）默认跟随 🌍 代理节点。'}</span></div>
+          </>
+        )}
       </main>
       <footer className="workspace-footer"><span>Proxy Console</span><span>轻量部署，清晰管理。</span></footer>
     </div>

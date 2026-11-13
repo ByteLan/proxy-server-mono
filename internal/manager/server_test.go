@@ -405,4 +405,23 @@ func TestPublicCACertEndpointRejectsPrivateKeysAndStaysOffSubHTTP(t *testing.T) 
 	if ut.PerformRequest(s.SubHTTP.Engine, "GET", "/ca.crt", nil).Code != 404 {
 		t.Fatal("SubHTTP must not expose /ca.crt")
 	}
+	mustCode(t, s, "GET", "/api/admin/onboarding", "wrong-token", nil, 401)
+	onboardRaw := mustCode(t, s, "GET", "/api/admin/onboarding", adminTestToken, nil, 200)
+	var onboard struct {
+		PublicURL       string `json:"public_url"`
+		HTTPSubPublic   string `json:"http_sub_public_url"`
+		EnrollToken     string `json:"enroll_token"`
+		CACertAvailable bool   `json:"ca_cert_available"`
+		CACertPEM       string `json:"ca_cert_pem"`
+		DefaultRepo     string `json:"default_repo"`
+	}
+	if err := json.Unmarshal(onboardRaw, &onboard); err != nil {
+		t.Fatal(err)
+	}
+	if onboard.PublicURL != "https://203.0.113.35:9443" || onboard.EnrollToken != enrollTestToken || !onboard.CACertAvailable || onboard.CACertPEM != string(certPEM) || onboard.DefaultRepo != "ByteLan/proxy-server-mono" {
+		t.Fatalf("unexpected /api/admin/onboarding payload: %+v", onboard)
+	}
+	if ut.PerformRequest(s.SubHTTP.Engine, "GET", "/api/admin/onboarding", nil, ut.Header{Key: "Authorization", Value: "Bearer " + adminTestToken}).Code != 404 {
+		t.Fatal("SubHTTP must not expose /api/admin/onboarding")
+	}
 }

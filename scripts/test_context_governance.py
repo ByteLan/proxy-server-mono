@@ -37,10 +37,13 @@ class ContextGovernanceTest(unittest.TestCase):
             (base / "docs" / "undated.md").write_text("# Old\n", encoding="utf-8")
             # CTX-004: hardcoded personal home path
             (base / "README.md").write_text("cd /" + "Users/alice/work/repo\n", encoding="utf-8")
+            # CTX-006: web/src/onboarding.ts without sync references in AGENTS.md / skills
+            (base / "web" / "src").mkdir(parents=True)
+            (base / "web" / "src" / "onboarding.ts").write_text("// guide\n", encoding="utf-8")
 
             res = self.run_check(base)
             self.assertNotEqual(res.returncode, 0)
-            for code in ("CTX-001", "CTX-002", "CTX-003", "CTX-004"):
+            for code in ("CTX-001", "CTX-002", "CTX-003", "CTX-004", "CTX-006"):
                 self.assertIn(code, res.stderr)
 
 

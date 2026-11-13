@@ -23,6 +23,7 @@ import (
 	"path"
 	"proxy-mono/internal/clash"
 	"proxy-mono/internal/model"
+	"proxy-mono/internal/version"
 	"proxy-mono/internal/webui"
 	"regexp"
 	"strings"
@@ -195,6 +196,17 @@ func (s *Server) routes() {
 	})
 	admin := h.Group("/api/admin", s.admin)
 	admin.GET("/health", func(_ context.Context, c *app.RequestContext) { c.JSON(200, utils.H{"ok": true}) })
+	admin.GET("/onboarding", func(_ context.Context, c *app.RequestContext) {
+		c.JSON(200, utils.H{
+			"public_url":          s.Config.PublicURL,
+			"http_sub_public_url": s.Config.HTTPSubPublicURL,
+			"enroll_token":        s.Config.EnrollToken,
+			"ca_cert_available":   len(s.publicCAPEM) > 0,
+			"ca_cert_pem":         string(s.publicCAPEM),
+			"version":             version.Version,
+			"default_repo":        "ByteLan/proxy-server-mono",
+		})
+	})
 	admin.GET("/nodes", func(_ context.Context, c *app.RequestContext) {
 		nodes, err := s.Store.nodes(true)
 		if err != nil {

@@ -9,7 +9,7 @@ description: >-
 
 # 多服务器代理集群实战运维指南
 
-本技能沉淀真实云服务器（GCP / 独立海外 VPS）部署与纳管 `proxy-manage-server`、`proxy-server` 的实战经验与避坑规范。执行具体单组件安装参数时配合阅读 [install-proxy-manage-server](../install-proxy-manage-server/SKILL.md) 与 [install-proxy-server](../install-proxy-server/SKILL.md)；模块设计边界见 [节点收编与自愈规范](../../product-spec/节点Agent/收编托管与多管理端自愈.md) 与 [发布安装规范](../../product-spec/发布与安装升级/免编译发布安装与自更新.md)。
+本技能沉淀真实云服务器（GCP / 独立海外 VPS）部署与纳管 `proxy-manage-server`、`proxy-server` 的实战经验与避坑规范。执行具体单组件安装参数时配合阅读 [install-proxy-manage-server](../install-proxy-manage-server/SKILL.md) 与 [install-proxy-server](../install-proxy-server/SKILL.md)；模块设计边界见 [节点收编与自愈规范](../../product-spec/节点Agent/收编托管与多管理端自愈.md)、[节点接入向导规范](../../product-spec/管理控制台/节点接入向导.md) 与 [发布安装规范](../../product-spec/发布与安装升级/免编译发布安装与自更新.md)。**同步红线**：修改本技能中的节点探测、私有 CA 信任、开机自启顺序或退避自愈核验步骤时，必须同步更新管理端前端模板 `web/src/onboarding.ts`。
 
 ---
 

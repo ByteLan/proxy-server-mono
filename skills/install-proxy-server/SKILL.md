@@ -5,7 +5,7 @@ description: 从 GitHub Release 下载、初始化或手动更新本仓库 Go �
 
 # 安装代理节点
 
-先读 [AGENTS.md](../../AGENTS.md)、[节点收编托管与自愈规范](../../product-spec/节点Agent/收编托管与多管理端自愈.md) 与 [免编译发布安装规范](../../product-spec/发布与安装升级/免编译发布安装与自更新.md)。跨机远程连接避坑、存量主机探测判定与恢复自检见 [多服务器集群实战运维](../proxy-cluster-ops/SKILL.md)；需要底层协议细节时读 [原始协议参考](../proxy-server-setup/SKILL.md)。源码根目录是本文件所在目录的上两级。
+先读 [AGENTS.md](../../AGENTS.md)、[节点收编托管与自愈规范](../../product-spec/节点Agent/收编托管与多管理端自愈.md)、[节点接入向导规范](../../product-spec/管理控制台/节点接入向导.md) 与 [免编译发布安装规范](../../product-spec/发布与安装升级/免编译发布安装与自更新.md)。跨机远程连接避坑、存量主机探测判定与恢复自检见 [多服务器集群实战运维](../proxy-cluster-ops/SKILL.md)；需要底层协议细节时读 [原始协议参考](../proxy-server-setup/SKILL.md)。源码根目录是本文件所在目录的上两级。**同步红线**：修改本技能中的安装、收编、自启或自更新命令时，必须同步更新管理端「节点接入指南」模板 `web/src/onboarding.ts`。
 
 推荐开发机编译并手动发布 Release，VPS 只下载已编译程序，无需 Go/Node 编译环境。发布者在工作树干净、当前 commit 已自行 push 后运行 `GOTOOLCHAIN=auto make publish`（默认 `main-<sha12>` 预发布）；正式版本用 `bash scripts/publish-release.sh --tag vX.Y.Z`，只本地检查用 `--dry-run`。实际发布需要 `gh` 登录和仓库写权限；dry-run 不需要登录也不证明已发布。发布凭据与 VPS `Contents: Read-only` 下载 token 分开保管。
 

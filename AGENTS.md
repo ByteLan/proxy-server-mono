@@ -23,7 +23,7 @@
 3. **写单次方案（`docs/YYYY-MM-DD-<topic>/`）**：单次迭代的需求背景、技术评估与施工方案统一写入带日期前缀的 `docs/YYYY-MM-DD-<topic>/`，上线并回写 `product-spec/` 后原目录留存归档，免人工搬家。
 4. **查历史背景**：对某处逻辑或历史演进存疑时，通过 `git log` / `git blame` 反查关联提交及对应的 `docs/YYYY-MM-DD-*` 文档。
 
-## 3. 按需加载技能（Skills）
+## 3. 按需加载技能（Skills）与前端接入向导强同步
 
 服务器安装、存量收编、跨机纳管与协议部署属于按需操作知识，不在本文件常驻展开。Canonical 技能位于 `skills/`（`.agents/skills`、`.claude/skills`、`.codex/skills` 通过相对软链对齐）：
 
@@ -31,6 +31,8 @@
 - [install-proxy-manage-server](skills/install-proxy-manage-server/SKILL.md)：下载、初始化、升级或回退 SQLite 管理端。
 - [install-proxy-server](skills/install-proxy-server/SKILL.md)：下载、初始化/收编、升级或回退代理节点 Agent。
 - [proxy-server-setup](skills/proxy-server-setup/SKILL.md)：底层 Hysteria2 / Xray 单机协议部署参数参考。
+
+- **安装技能与管理端页面双向同步铁律**：管理后台「节点接入指南」页面（模板源码 `web/src/onboarding.ts`，产品设计 `product-spec/管理控制台/节点接入向导.md`）面向人工运维与 AI Agent 动态生成节点探测、安装/收编、开机自启与自愈核验步骤。凡修改 `skills/install-proxy-server/SKILL.md`、`skills/proxy-cluster-ops/SKILL.md` 或节点安装/启动参数时，**必须同步更新 `web/src/onboarding.ts` 并重新构建前端产物**；反之修改页面向导步骤时也必须同步回写对应 Skill。
 
 ## 4. 文档编写门禁
 

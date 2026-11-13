@@ -105,6 +105,18 @@ if skills_dir.exists() and (root / ".agents" / "skills").exists():
             if not (link.is_symlink() and link.resolve() == skill.resolve()):
                 errors.append(f"CTX-005: missing or mismatched skill symlink {mirror}/{skill.name} -> skills/{skill.name}")
 
+# CTX-006: Node onboarding UI template & proxy install skills bidirectional sync anchor
+onboarding_ts = root / "web" / "src" / "onboarding.ts"
+if onboarding_ts.exists():
+    required_refs = [
+        root / "AGENTS.md",
+        root / "skills" / "install-proxy-server" / "SKILL.md",
+        root / "skills" / "proxy-cluster-ops" / "SKILL.md",
+    ]
+    for doc in required_refs:
+        if not doc.is_file() or "web/src/onboarding.ts" not in doc.read_text(encoding="utf-8"):
+            errors.append(f"CTX-006: {doc.relative_to(root)} must reference web/src/onboarding.ts to enforce skill-UI sync")
+
 if errors:
     for err in errors:
         print(err, file=sys.stderr)
