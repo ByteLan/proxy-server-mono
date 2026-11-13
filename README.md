@@ -236,7 +236,7 @@ export PUBLIC_URL=http://127.0.0.1:8080
 
 详细系统设计见 [架构说明](docs/architecture.md)，接口定义见 [API 契约](docs/api.md)，部署细节见 [部署指南](docs/deployment.md)，验证与资源抽样见 [验证记录](docs/verification.md)。
 
-- **节点接入**：节点 `manager_url` 支持 HTTPS 域名或带 IP SAN 证书的 IP（私有 CA 可用 `--ca-file` 导入），首次凭 `ENROLL_TOKEN` 注册换取绑定该节点 ID 的独立 Token，私钥始终留在节点本地。
+- **节点接入与多管理端**：节点支持 HTTPS 域名或带 IP SAN 证书的 IP（私有 CA 可用 `--ca-file` 导入），首次凭 `ENROLL_TOKEN` 注册换取绑定该节点 ID 的独立 Token，并可通过 `add-manager` 同时接入多个独立管理端；私钥始终留在节点本地。
 - **动态固定订阅与专属纯净分流**：
   - 每条订阅链接可自由勾选**通用代理节点（`🌍 代理`）**与**协议范围**，并可单独为 **Claude / Anthropic**、**ChatGPT / Codex**、**Google / Gemini（含 Antigravity、YouTube）** 指定一台或多台纯净 IP 节点。
   - 三个专属组均采用 `REJECT` 置顶的 `url-test`（30 秒自动测速切换所选节点下最快的协议，组内全部失效或被停用/删除时自动 `REJECT` 阻断，严禁回退到脏 IP 节点或直连泄漏真实 IP）。

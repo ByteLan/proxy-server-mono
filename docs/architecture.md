@@ -18,7 +18,7 @@ flowchart LR
 
 管理端可使用成对的 TLS_CERT_FILE / TLS_KEY_FILE 直接提供 HTTPS（最低 TLS 1.2），或由已有 HTTPS 入口转发到默认本地 HTTP 监听。证书申请、续期及更新后重启由部署者管理，不自动 ACME。
 
-节点的 Go Agent 负责启动、监控、失败重启和停止两个协议子进程，并向管理端主动发请求；中心不需要 SSH 访问节点，也不需要连接节点管理端口。Hysteria2 负责 UDP/QUIC，Xray 负责 VLESS+REALITY TCP。管理平面短暂不可用时，已有节点继续运行代理核心。
+节点的 Go Agent 支持两种核心管理方式：**纯新主机托管模式（`init`）**负责启动、监控、失败重启和停止独立的 Hysteria2 / Xray 子进程；**存量主机无感收编模式（`adopt` / `--adopt-existing`）**不覆盖不重启原有内核进程，只读提取客户端连接参数并通过 `systemctl is-active` 探测既有 systemd 服务状态。Agent 主动向一个或多个管理端并发发起注册与心跳请求；中心不需要 SSH 访问节点，也不需要连接节点管理端口。管理平面短暂不可用或单个管理端异常时，代理核心与其余管理端心跳继续正常运行。
 
 Linux amd64/arm64 与 systemd 是首批安装目标。Docker、NAT、云安全组和不同网络的可达性需各自配置与验证。节点必须能向中心发 HTTPS 请求；同时客户端必须能访问节点公布的协议端口。只支持 HTTP 请求、没有长期进程或 UDP 能力的运行环境不能等同于完整代理节点。
 
@@ -26,7 +26,7 @@ Linux amd64/arm64 与 systemd 是首批安装目标。Docker、NAT、云安全�
 
 ## 身份与凭据
 
-- 节点持久化随机 ID，不使用容易变化的 IP 当身份。`manager_url` 接受 HTTPS 域名/IP和端口；`endpoints[].server` 是客户端连接节点的对外域名/IP，不从管理请求来源 IP 推断。
+- 节点持久化随机 ID，不使用容易变化的 IP 当身份。单节点可配置一个或多个管理端（`manager_url` 与 `managers[]`，支持 `add-manager` / `remove-manager` / `list-managers`），每个管理端独立配置 HTTPS 域名/IP端口、可选私有 CA、初始注册凭据与持久化节点 Token（`0600` 文件）；`endpoints[].server` 是客户端连接节点的对外域名/IP，不从管理请求来源 IP 推断。
 - 首次注册携带 enrollment key，管理端返回绑定到该节点 ID 的 token。Agent 将 token 保存在本地 `0600` 文件。已有 ID 的注册返回冲突，不覆盖已有身份。
 - 节点本地生成并拥有代理运行凭据。REALITY 私钥、TLS 私钥始终留在节点。中心只收到导出客户端配置所需的密码、UUID、公钥、short ID、证书指纹等信息。
 - 中心用对称密钥加密保存客户端凭据；普通节点列表不返回这些字段。SQLite 备份必须同时备份加密主密钥，密钥与数据库不要一起公开。

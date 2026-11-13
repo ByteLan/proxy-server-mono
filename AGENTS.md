@@ -4,7 +4,7 @@ Read [architecture](docs/architecture.md), [API contract](docs/api.md), and [REA
 
 - Keep runtime small: SQLite only, no Redis/PostgreSQL, a single manager process serves the compiled frontend (`internal/webui/dist` embedded via `go:embed`). Target Linux 1 CPU / 1 GiB; prefer building on a development host.
 - `proxy-manage-server` is a control plane ONLY. Never add proxy listeners, proxy forwarding or proxy cores to its deployment.
-- `proxy-server` is the node Agent; Hysteria2/Xray run separately on proxy nodes.
+- `proxy-server` is the node Agent; Hysteria2/Xray run separately on proxy nodes (either supervised as child processes on fresh hosts via `init`, or adopted in companion mode via `adopt` / `--adopt-existing` probing existing systemd units). A single `proxy-server` can concurrently register and send heartbeats to multiple independent `proxy-manage-server` instances (`add-manager` / `list-managers` / `remove-manager`).
 - Stable subscription URLs read current selections on every refresh. Adding/removing nodes or disabling/deleting nodes must affect the same URL. Revoking a URL does not revoke already downloaded proxy credentials.
 - Subscription Clash YAML (`internal/clash/render.go`) explicitly defines `GLOBAL` with `🌍 代理` first (so Global mode uses the same node as Rule mode rather than `DIRECT`), and keeps Claude / ChatGPT / Google dedicated groups as `REJECT`-first `url-test` groups (auto-selecting the fastest protocol across assigned nodes and never leaking to dirty general nodes or `DIRECT` when disabled/deleted).
 - Never commit operational credentials, node configs, SQLite files or generated client YAML. Endpoint server private keys stay local.
@@ -15,7 +15,7 @@ Read [architecture](docs/architecture.md), [API contract](docs/api.md), and [REA
 End-to-end zero-server-compile workflows are documented in `README.md` and `docs/`:
 
 - **Local build & GitHub Release publishing**: [README — 本地开发与发布 GitHub Release](README.md#本地开发与发布-github-release) · [docs/releases.md](docs/releases.md#维护者手动构建与发布) · [scripts/publish-release.sh](scripts/publish-release.sh) · [scripts/build-release.sh](scripts/build-release.sh)
-- **Server zero-compile installation (Manager, Node fresh install & `--adopt-existing` companion mode)**: [README — Server 端免编译安装](README.md#server-端免编译安装) · [docs/deployment.md](docs/deployment.md) · [scripts/install.sh](scripts/install.sh) · [scripts/install-proxy-manage-server.sh](scripts/install-proxy-manage-server.sh) · [scripts/install-proxy-server.sh](scripts/install-proxy-server.sh)
+- **Server zero-compile installation (Manager, Node fresh install, `--adopt-existing` companion mode & multi-manager `add-manager`)**: [README — Server 端免编译安装](README.md#server-端免编译安装) · [docs/deployment.md](docs/deployment.md#代理节点) · [scripts/install.sh](scripts/install.sh) · [scripts/install-proxy-manage-server.sh](scripts/install-proxy-manage-server.sh) · [scripts/install-proxy-server.sh](scripts/install-proxy-server.sh) · [internal/agent/adopt.go](internal/agent/adopt.go) · [internal/agent/managers.go](internal/agent/managers.go)
 - **Server zero-compile update (frontend + backend via embedded binary) & `.previous` rollback**: [README — Server 端免编译更新与回退](README.md#server-端免编译更新与回退) · [docs/releases.md](docs/releases.md#查看检查与更新) · [internal/selfupdate](internal/selfupdate/update.go)
 - **Subscription routing & node enrollment**: [README — 订阅分流与节点接入说明](README.md#订阅分流与节点接入说明) · [docs/architecture.md](docs/architecture.md) · [docs/api.md](docs/api.md)
 
