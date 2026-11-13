@@ -49,6 +49,7 @@ sudo bash scripts/install-proxy-manage-server.sh \
 | `ENROLL_TOKEN` | 新节点初次注册 key |
 | `MASTER_KEY` | 可选，base64 编码的 32 字节密钥；未设置则首次启动创建 `DATA_DIR/master.key` |
 | `TLS_CERT_FILE` / `TLS_KEY_FILE` | 可选，成对设置 PEM 证书与私钥路径，直接提供 HTTPS |
+| `HTTP_SUB_LISTEN` / `HTTP_SUB_PUBLIC_URL` | 可选，成对设置独立 HTTP 订阅监听地址与对外 URL（仅暴露 `/sub/:token` 与 `/healthz`，供纯 IP 无域名环境一键导入 Clash） |
 
 已有证书时可让管理端直接提供 HTTPS，减少额外常驻服务：
 

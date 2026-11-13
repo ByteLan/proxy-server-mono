@@ -27,11 +27,21 @@ import (
 type Config struct {
 	Listen, DataDir, AdminToken, EnrollToken, PublicURL, MasterKey string
 	TLSCertFile, TLSKeyFile                                        string
+	HTTPSubListen, HTTPSubPublicURL                                string
 }
 type Server struct {
-	Store  *Store
-	Config Config
-	HTTP   *server.Hertz
+	Store   *Store
+	Config  Config
+	HTTP    *server.Hertz
+	SubHTTP *server.Hertz
+}
+
+func validateOriginURL(raw, name string) (string, error) {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
+		return "", fmt.Errorf("%s must be an http(s) origin, e.g. https://proxy.example.com", name)
+	}
+	return strings.TrimRight(raw, "/"), nil
 }
 
 func New(c Config) (*Server, error) {
@@ -41,11 +51,24 @@ func New(c Config) (*Server, error) {
 	if c.AdminToken == c.EnrollToken {
 		return nil, fmt.Errorf("admin and enrollment tokens must be different")
 	}
-	u, err := url.Parse(c.PublicURL)
-	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
-		return nil, fmt.Errorf("PUBLIC_URL must be an http(s) origin, e.g. https://proxy.example.com")
+	pubURL, err := validateOriginURL(c.PublicURL, "PUBLIC_URL")
+	if err != nil {
+		return nil, err
 	}
-	c.PublicURL = strings.TrimRight(c.PublicURL, "/")
+	c.PublicURL = pubURL
+	if (c.HTTPSubListen == "") != (c.HTTPSubPublicURL == "") {
+		return nil, fmt.Errorf("HTTP_SUB_LISTEN and HTTP_SUB_PUBLIC_URL must be configured together")
+	}
+	if c.HTTPSubPublicURL != "" {
+		httpSubURL, err := validateOriginURL(c.HTTPSubPublicURL, "HTTP_SUB_PUBLIC_URL")
+		if err != nil {
+			return nil, err
+		}
+		if c.HTTPSubListen == c.Listen {
+			return nil, fmt.Errorf("HTTP_SUB_LISTEN must differ from LISTEN")
+		}
+		c.HTTPSubPublicURL = httpSubURL
+	}
 	store, err := Open(c.DataDir, c.MasterKey)
 	if err != nil {
 		return nil, err
@@ -63,8 +86,15 @@ func New(c Config) (*Server, error) {
 		}
 		h = server.New(server.WithHostPorts(c.Listen), server.WithTransport(standard.NewTransporter), server.WithTLS(&tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{cert}}), server.WithMaxRequestBodySize(128<<10), server.WithReadTimeout(10*time.Second), server.WithWriteTimeout(15*time.Second), server.WithIdleTimeout(60*time.Second))
 	}
-	s := &Server{store, c, h}
+	var subH *server.Hertz
+	if c.HTTPSubListen != "" {
+		subH = server.New(server.WithHostPorts(c.HTTPSubListen), server.WithTransport(standard.NewTransporter), server.WithMaxRequestBodySize(4<<10), server.WithReadTimeout(10*time.Second), server.WithWriteTimeout(15*time.Second), server.WithIdleTimeout(60*time.Second))
+	}
+	s := &Server{Store: store, Config: c, HTTP: h, SubHTTP: subH}
 	s.routes()
+	if s.SubHTTP != nil {
+		s.subOnlyRoutes()
+	}
 	return s, nil
 }
 func bearer(c *app.RequestContext) string {
@@ -127,10 +157,13 @@ func (s *Server) routes() {
 		}
 	})
 	admin.GET("/subscriptions", func(_ context.Context, c *app.RequestContext) {
-		subs, err := s.Store.subscriptions()
+		subs, tokens, err := s.Store.subscriptions()
 		if err != nil {
 			internalError(c)
 			return
+		}
+		for i := range subs {
+			s.populateSubURLs(&subs[i], tokens[i])
 		}
 		c.JSON(200, subs)
 	})
@@ -147,17 +180,22 @@ func (s *Server) routes() {
 		}
 	})
 	admin.POST("/subscriptions/:id/rotate", func(_ context.Context, c *app.RequestContext) {
-		token, err := s.Store.rotateSubscription(c.Param("id"))
+		p, token, err := s.Store.rotateSubscription(c.Param("id"))
 		if errors.Is(err, sql.ErrNoRows) {
 			fail(c, 404, "subscription not found")
 		} else if err != nil {
 			internalError(c)
 		} else {
-			c.JSON(200, utils.H{"url": s.subURL(token)})
+			s.populateSubURLs(&p, token)
+			resp := utils.H{"subscription": p, "url": p.URL}
+			if p.HTTPURL != "" {
+				resp["http_url"] = p.HTTPURL
+			}
+			c.JSON(200, resp)
 		}
 	})
 	admin.GET("/subscriptions/:id/preview", func(_ context.Context, c *app.RequestContext) {
-		p, err := s.Store.subscription(c.Param("id"))
+		p, _, err := s.Store.subscription(c.Param("id"))
 		if errors.Is(err, sql.ErrNoRows) {
 			fail(c, 404, "subscription not found")
 		} else if err != nil {
@@ -168,16 +206,7 @@ func (s *Server) routes() {
 	})
 	h.POST("/api/agent/register", s.register)
 	h.POST("/api/agent/heartbeat", s.heartbeat)
-	h.GET("/sub/:token", func(_ context.Context, c *app.RequestContext) {
-		p, err := s.Store.subscriptionByToken(c.Param("token"))
-		if errors.Is(err, sql.ErrNoRows) {
-			fail(c, 404, "subscription not found")
-		} else if err != nil {
-			internalError(c)
-		} else {
-			s.writeYAML(c, p)
-		}
-	})
+	h.GET("/sub/:token", s.serveSubscriptionByToken)
 	h.NoRoute(func(_ context.Context, c *app.RequestContext) {
 		requestPath := string(c.Path())
 		if c.Method() == nil || string(c.Method()) != "GET" || strings.HasPrefix(requestPath, "/api/") || strings.HasPrefix(requestPath, "/sub/") {
@@ -378,7 +407,43 @@ func (s *Server) validSubscription(c *app.RequestContext, p *model.Subscription)
 	}
 	return true
 }
+func (s *Server) serveSubscriptionByToken(_ context.Context, c *app.RequestContext) {
+	p, err := s.Store.subscriptionByToken(c.Param("token"))
+	if errors.Is(err, sql.ErrNoRows) {
+		fail(c, 404, "subscription not found")
+	} else if err != nil {
+		internalError(c)
+	} else {
+		s.writeYAML(c, p)
+	}
+}
+func (s *Server) subOnlyRoutes() {
+	h := s.SubHTTP
+	h.Use(func(ctx context.Context, c *app.RequestContext) {
+		c.Header("X-Content-Type-Options", "nosniff")
+		c.Header("Referrer-Policy", "no-referrer")
+		c.Header("X-Frame-Options", "DENY")
+		c.Header("Cache-Control", "no-store")
+		c.Next(ctx)
+	})
+	h.GET("/healthz", func(_ context.Context, c *app.RequestContext) { c.JSON(200, utils.H{"ok": true}) })
+	h.GET("/sub/:token", s.serveSubscriptionByToken)
+	h.NoRoute(func(_ context.Context, c *app.RequestContext) { fail(c, 404, "not found") })
+}
 func (s *Server) subURL(token string) string { return s.Config.PublicURL + "/sub/" + token }
+func (s *Server) httpSubURL(token string) string {
+	if s.Config.HTTPSubPublicURL == "" {
+		return ""
+	}
+	return s.Config.HTTPSubPublicURL + "/sub/" + token
+}
+func (s *Server) populateSubURLs(p *model.Subscription, token string) {
+	if token == "" {
+		return
+	}
+	p.URL = s.subURL(token)
+	p.HTTPURL = s.httpSubURL(token)
+}
 func (s *Server) createSubscription(_ context.Context, c *app.RequestContext) {
 	var p model.Subscription
 	if !bind(c, &p) || !s.validSubscription(c, &p) {
@@ -389,19 +454,25 @@ func (s *Server) createSubscription(_ context.Context, c *app.RequestContext) {
 		internalError(c)
 		return
 	}
-	c.JSON(201, utils.H{"subscription": p, "url": s.subURL(token)})
+	s.populateSubURLs(&p, token)
+	resp := utils.H{"subscription": p, "url": p.URL}
+	if p.HTTPURL != "" {
+		resp["http_url"] = p.HTTPURL
+	}
+	c.JSON(201, resp)
 }
 func (s *Server) updateSubscription(_ context.Context, c *app.RequestContext) {
 	var p model.Subscription
 	if !bind(c, &p) || !s.validSubscription(c, &p) {
 		return
 	}
-	p, err := s.Store.updateSubscription(c.Param("id"), p)
+	p, token, err := s.Store.updateSubscription(c.Param("id"), p)
 	if errors.Is(err, sql.ErrNoRows) {
 		fail(c, 404, "subscription not found")
 	} else if err != nil {
 		internalError(c)
 	} else {
+		s.populateSubURLs(&p, token)
 		c.JSON(200, p)
 	}
 }

@@ -7,16 +7,17 @@ usage() {
 Install a locally built manager binary on a Linux systemd host.
 Usage: install-proxy-manage-server.sh --binary PATH --public-url URL [--listen ADDRESS]
   [--tls-cert CERT_PEM --tls-key KEY_PEM]
+  [--http-sub-listen ADDRESS --http-sub-public-url URL]
 Optional environment: ADMIN_TOKEN, ENROLL_TOKEN, MASTER_KEY (base64 32 bytes).
 DESTDIR=/staging/path stages files without creating users or calling systemctl.
 An existing manager.env is preserved. Tokens are never printed.
 EOF
 }
 
-binary= public_url= listen=127.0.0.1:8080 tls_cert= tls_key=
+binary= public_url= listen=127.0.0.1:8080 tls_cert= tls_key= http_sub_listen= http_sub_public_url=
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --binary|--public-url|--listen|--tls-cert|--tls-key)
+    --binary|--public-url|--listen|--tls-cert|--tls-key|--http-sub-listen|--http-sub-public-url)
       [[ $# -ge 2 ]] || { usage >&2; exit 2; }
       case "$1" in
         --binary) binary=$2 ;;
@@ -24,6 +25,8 @@ while [[ $# -gt 0 ]]; do
         --listen) listen=$2 ;;
         --tls-cert) tls_cert=$2 ;;
         --tls-key) tls_key=$2 ;;
+        --http-sub-listen) http_sub_listen=$2 ;;
+        --http-sub-public-url) http_sub_public_url=${2%/} ;;
       esac
       shift 2 ;;
     -h|--help) usage; exit 0 ;;
@@ -35,6 +38,11 @@ url_pattern='^https?://(\[[0-9A-Fa-f:]+\]|[A-Za-z0-9.-]+)(:[0-9]{1,5})?$'
 listen_pattern='^(\[[0-9A-Fa-f:]+\]|[A-Za-z0-9.-]*):[0-9]{1,5}$'
 [[ "$public_url" =~ $url_pattern ]] || { echo 'Provide an http(s) origin with host and optional port, without path, query, credentials or spaces.' >&2; exit 2; }
 [[ "$listen" =~ $listen_pattern ]] || { echo 'Invalid listen host:port address.' >&2; exit 2; }
+if [[ -n "$http_sub_listen" || -n "$http_sub_public_url" ]]; then
+  [[ -n "$http_sub_listen" && -n "$http_sub_public_url" ]] || { echo '--http-sub-listen and --http-sub-public-url must be provided together.' >&2; exit 2; }
+  [[ "$http_sub_listen" =~ $listen_pattern && "$http_sub_listen" != "$listen" ]] || { echo 'Invalid or conflicting --http-sub-listen host:port address.' >&2; exit 2; }
+  [[ "$http_sub_public_url" =~ $url_pattern ]] || { echo 'Invalid --http-sub-public-url origin.' >&2; exit 2; }
+fi
 if [[ -n "$tls_cert" || -n "$tls_key" ]]; then
   [[ -f "$tls_cert" && -f "$tls_key" ]] || { echo '--tls-cert and --tls-key must both point to readable PEM files.' >&2; exit 2; }
 fi
@@ -71,6 +79,9 @@ if [[ ! -e "$env_file" ]]; then
     if [[ -n "$tls_cert" ]]; then
       printf 'TLS_CERT_FILE=/etc/proxy-manage-server/tls.crt\nTLS_KEY_FILE=/etc/proxy-manage-server/tls.key\n'
     fi
+    if [[ -n "$http_sub_listen" ]]; then
+      printf 'HTTP_SUB_LISTEN=%s\nHTTP_SUB_PUBLIC_URL=%s\n' "$http_sub_listen" "$http_sub_public_url"
+    fi
   } > "$env_file"
   chmod 0600 "$env_file"
 else
@@ -79,6 +90,13 @@ else
     temp_env=$(mktemp "$env_file.XXXXXX")
     awk '!/^TLS_CERT_FILE=/ && !/^TLS_KEY_FILE=/' "$env_file" > "$temp_env"
     printf 'TLS_CERT_FILE=/etc/proxy-manage-server/tls.crt\nTLS_KEY_FILE=/etc/proxy-manage-server/tls.key\n' >> "$temp_env"
+    chmod 0600 "$temp_env"
+    mv "$temp_env" "$env_file"
+  fi
+  if [[ -n "$http_sub_listen" ]]; then
+    temp_env=$(mktemp "$env_file.XXXXXX")
+    awk '!/^HTTP_SUB_LISTEN=/ && !/^HTTP_SUB_PUBLIC_URL=/' "$env_file" > "$temp_env"
+    printf 'HTTP_SUB_LISTEN=%s\nHTTP_SUB_PUBLIC_URL=%s\n' "$http_sub_listen" "$http_sub_public_url" >> "$temp_env"
     chmod 0600 "$temp_env"
     mv "$temp_env" "$env_file"
   fi

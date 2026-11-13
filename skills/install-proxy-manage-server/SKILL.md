@@ -30,8 +30,8 @@ description: 从 GitHub Release 下载、初始化或手动更新本仓库 Go/He
    ```
 
 4. 首次安装自动生成 ADMIN_TOKEN / ENROLL_TOKEN 并写入 root-only `manager.env`，不在回复或日志中展示秘密。必要时由用户在目标机私下读取 ADMIN_TOKEN 登录 UI，用 ENROLL_TOKEN 接入节点。首次启动自动保存主密钥到 DATA_DIR/master.key；显式 MASTER_KEY 必须是 32 字节的 base64，保留原密钥与 SQLite 一起备份。
-5. 已有证书时用安装参数 `--listen 0.0.0.0:8443 --public-url https://manager.example.com:8443 --tls-cert /path/fullchain.pem --tls-key /path/privkey.pem` 直接提供 HTTPS，无需额外常驻服务；也可用现有 HTTPS 反向代理连接默认 `127.0.0.1:8080`。验证证书和 `/healthz`。使用 IP 时证书必须含对应 IP SAN，私有 CA 通过节点 `--ca-file` 信任。确认管理端可直连，避免订阅获取依赖尚未下载的代理配置。
-6. 检查 systemd 运行状态、UI token 登录、节点列表和订阅创建。选择变化应在同一链接下一次刷新时生效。订阅链接只在创建/轮换时显示；不要把它写入公开日志或 Git。
+5. 已有证书时用安装参数 `--listen 0.0.0.0:8443 --public-url https://manager.example.com:8443 --tls-cert /path/fullchain.pem --tls-key /path/privkey.pem` 直接提供 HTTPS，无需额外常驻服务；也可用现有 HTTPS 反向代理连接默认 `127.0.0.1:8080`。纯 IP 自签证书场景下，Clash 客户端快速导入框会拒绝自签 HTTPS，可追加 `--http-sub-listen 0.0.0.0:9080 --http-sub-public-url http://<IP>:9080` 开启只读 HTTP 订阅端口（仅服务 `/sub/:token` 与 `/healthz`，管理 API 与节点注册仍强制走 HTTPS）。验证证书和 `/healthz`。使用 IP 时证书必须含对应 IP SAN，私有 CA 通过节点 `--ca-file` 信任。确认管理端可直连，避免订阅获取依赖尚未下载的代理配置。
+6. 检查 systemd 运行状态、UI token 登录、节点列表和订阅创建。选择变化应在同一链接下一次刷新时生效。订阅 token 在数据库加密存储（`token_enc`），管理员可在后台反复查看、复制或重置订阅链接；不要把订阅链接写入公开日志或 Git。
 
 配置变量为 LISTEN、DATA_DIR、PUBLIC_URL、ADMIN_TOKEN、ENROLL_TOKEN、可选 MASTER_KEY 和成对的 TLS_CERT_FILE / TLS_KEY_FILE。脚本重跑保留已有环境文件；修改监听/地址需明确编辑该文件再重启；显式传 TLS 文件会复制并更新 TLS 路径。续期需手动更新文件并重启，不自动 ACME。改变主密钥不等同于 token 轮换，错误更换会使历史凭据不可解密。
 

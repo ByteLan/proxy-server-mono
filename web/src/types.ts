@@ -45,6 +45,8 @@ export interface Subscription {
   protocols: string[];
   routes: SiteRoutes;
   enabled: boolean;
+  url?: string;
+  http_url?: string;
   created_at: number;
   updated_at: number;
 }

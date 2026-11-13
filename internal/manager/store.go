@@ -73,12 +73,12 @@ func Open(dir, key string) (*Store, error) {
 	}
 	db.SetMaxOpenConns(1)
 	fail := func(err error) (*Store, error) { db.Close(); return nil, err }
-	for _, q := range []string{"PRAGMA journal_mode=WAL", "PRAGMA busy_timeout=5000", "PRAGMA foreign_keys=ON", "PRAGMA cache_size=-4096", `CREATE TABLE IF NOT EXISTS nodes(id TEXT PRIMARY KEY,name TEXT NOT NULL,os TEXT NOT NULL,arch TEXT NOT NULL,version TEXT NOT NULL,enabled INTEGER NOT NULL DEFAULT 1,last_seen INTEGER NOT NULL,config_hash TEXT NOT NULL DEFAULT '',cores TEXT NOT NULL DEFAULT '[]',endpoints BLOB NOT NULL,token_hash TEXT NOT NULL UNIQUE)`, `CREATE TABLE IF NOT EXISTS revoked_nodes(id TEXT PRIMARY KEY)`, `CREATE TABLE IF NOT EXISTS subscriptions(id TEXT PRIMARY KEY,name TEXT NOT NULL,node_ids TEXT NOT NULL,protocols TEXT NOT NULL,routes TEXT NOT NULL DEFAULT '{}',enabled INTEGER NOT NULL,token_hash TEXT NOT NULL UNIQUE,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL)`} {
+	for _, q := range []string{"PRAGMA journal_mode=WAL", "PRAGMA busy_timeout=5000", "PRAGMA foreign_keys=ON", "PRAGMA cache_size=-4096", `CREATE TABLE IF NOT EXISTS nodes(id TEXT PRIMARY KEY,name TEXT NOT NULL,os TEXT NOT NULL,arch TEXT NOT NULL,version TEXT NOT NULL,enabled INTEGER NOT NULL DEFAULT 1,last_seen INTEGER NOT NULL,config_hash TEXT NOT NULL DEFAULT '',cores TEXT NOT NULL DEFAULT '[]',endpoints BLOB NOT NULL,token_hash TEXT NOT NULL UNIQUE)`, `CREATE TABLE IF NOT EXISTS revoked_nodes(id TEXT PRIMARY KEY)`, `CREATE TABLE IF NOT EXISTS subscriptions(id TEXT PRIMARY KEY,name TEXT NOT NULL,node_ids TEXT NOT NULL,protocols TEXT NOT NULL,routes TEXT NOT NULL DEFAULT '{}',enabled INTEGER NOT NULL,token_hash TEXT NOT NULL UNIQUE,token_enc BLOB,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL)`} {
 		if _, err = db.Exec(q); err != nil {
 			return fail(err)
 		}
 	}
-	if err = ensureSubscriptionRoutesColumn(db); err != nil {
+	if err = ensureSubscriptionColumns(db); err != nil {
 		return fail(err)
 	}
 	if err = os.Chmod(filepath.Join(dir, "manager.db"), 0600); err != nil {
@@ -258,13 +258,14 @@ func (s *Store) deleteNode(id string) (bool, error) {
 	}
 	return true, tx.Commit()
 }
-func ensureSubscriptionRoutesColumn(db *sql.DB) error {
+func ensureSubscriptionColumns(db *sql.DB) error {
 	rows, err := db.Query(`PRAGMA table_info(subscriptions)`)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	hasRoutes := false
+	hasTokenEnc := false
 	for rows.Next() {
 		var cid, notnull, pk int
 		var name, ctype string
@@ -275,15 +276,24 @@ func ensureSubscriptionRoutesColumn(db *sql.DB) error {
 		if name == "routes" {
 			hasRoutes = true
 		}
+		if name == "token_enc" {
+			hasTokenEnc = true
+		}
 	}
 	if err = rows.Err(); err != nil {
 		return err
 	}
-	if hasRoutes {
-		return nil
+	if !hasRoutes {
+		if _, err = db.Exec(`ALTER TABLE subscriptions ADD COLUMN routes TEXT NOT NULL DEFAULT '{}'`); err != nil {
+			return err
+		}
 	}
-	_, err = db.Exec(`ALTER TABLE subscriptions ADD COLUMN routes TEXT NOT NULL DEFAULT '{}'`)
-	return err
+	if !hasTokenEnc {
+		if _, err = db.Exec(`ALTER TABLE subscriptions ADD COLUMN token_enc BLOB`); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 func removeID(ids []string, target string) []string {
 	out := []string{}
@@ -308,51 +318,61 @@ func normalizeRoutes(r *model.SiteRoutes) {
 	normalizeRouteGroup(&r.ChatGPT)
 	normalizeRouteGroup(&r.Google)
 }
-func scanSubscription(row interface{ Scan(...any) error }) (model.Subscription, error) {
+func (s *Store) scanSubscription(row interface{ Scan(...any) error }) (model.Subscription, string, error) {
 	var p model.Subscription
 	var nodes, protocols, routes string
-	err := row.Scan(&p.ID, &p.Name, &nodes, &protocols, &routes, &p.Enabled, &p.CreatedAt, &p.UpdatedAt)
+	var tokenEnc []byte
+	err := row.Scan(&p.ID, &p.Name, &nodes, &protocols, &routes, &p.Enabled, &tokenEnc, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
-		return p, err
+		return p, "", err
 	}
 	if err = json.Unmarshal([]byte(nodes), &p.NodeIDs); err != nil {
-		return p, err
+		return p, "", err
 	}
 	if err = json.Unmarshal([]byte(protocols), &p.Protocols); err != nil {
-		return p, err
+		return p, "", err
 	}
 	if routes != "" {
 		if err = json.Unmarshal([]byte(routes), &p.Routes); err != nil {
-			return p, err
+			return p, "", err
+		}
+	}
+	var token string
+	if len(tokenEnc) > 0 {
+		if err = s.unseal(tokenEnc, &token); err != nil {
+			return p, "", err
 		}
 	}
 	normalizeRoutes(&p.Routes)
-	return p, nil
+	return p, token, nil
 }
 
-const subColumns = `id,name,node_ids,protocols,routes,enabled,created_at,updated_at`
+const subColumns = `id,name,node_ids,protocols,routes,enabled,token_enc,created_at,updated_at`
 
-func (s *Store) subscriptions() ([]model.Subscription, error) {
+func (s *Store) subscriptions() ([]model.Subscription, []string, error) {
 	rows, err := s.db.Query(`SELECT ` + subColumns + ` FROM subscriptions ORDER BY created_at,id`)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer rows.Close()
 	out := []model.Subscription{}
+	tokens := []string{}
 	for rows.Next() {
-		p, e := scanSubscription(rows)
+		p, tok, e := s.scanSubscription(rows)
 		if e != nil {
-			return nil, e
+			return nil, nil, e
 		}
 		out = append(out, p)
+		tokens = append(tokens, tok)
 	}
-	return out, rows.Err()
+	return out, tokens, rows.Err()
 }
-func (s *Store) subscription(id string) (model.Subscription, error) {
-	return scanSubscription(s.db.QueryRow(`SELECT `+subColumns+` FROM subscriptions WHERE id=?`, id))
+func (s *Store) subscription(id string) (model.Subscription, string, error) {
+	return s.scanSubscription(s.db.QueryRow(`SELECT `+subColumns+` FROM subscriptions WHERE id=?`, id))
 }
 func (s *Store) subscriptionByToken(token string) (model.Subscription, error) {
-	return scanSubscription(s.db.QueryRow(`SELECT `+subColumns+` FROM subscriptions WHERE token_hash=? AND enabled=1`, hash(token)))
+	p, _, err := s.scanSubscription(s.db.QueryRow(`SELECT `+subColumns+` FROM subscriptions WHERE token_hash=? AND enabled=1`, hash(token)))
+	return p, err
 }
 func (s *Store) createSubscription(p model.Subscription) (model.Subscription, string, error) {
 	p.ID = RandomToken()[:16]
@@ -360,38 +380,46 @@ func (s *Store) createSubscription(p model.Subscription) (model.Subscription, st
 	p.UpdatedAt = p.CreatedAt
 	normalizeRoutes(&p.Routes)
 	token := RandomToken()
+	tokenEnc, err := s.seal(token)
+	if err != nil {
+		return p, "", err
+	}
 	ids, _ := json.Marshal(p.NodeIDs)
 	protocols, _ := json.Marshal(p.Protocols)
 	routes, _ := json.Marshal(p.Routes)
-	_, err := s.db.Exec(`INSERT INTO subscriptions(id,name,node_ids,protocols,routes,enabled,token_hash,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)`, p.ID, p.Name, string(ids), string(protocols), string(routes), p.Enabled, hash(token), p.CreatedAt, p.UpdatedAt)
+	_, err = s.db.Exec(`INSERT INTO subscriptions(id,name,node_ids,protocols,routes,enabled,token_hash,token_enc,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)`, p.ID, p.Name, string(ids), string(protocols), string(routes), p.Enabled, hash(token), tokenEnc, p.CreatedAt, p.UpdatedAt)
 	return p, token, err
 }
-func (s *Store) updateSubscription(id string, p model.Subscription) (model.Subscription, error) {
+func (s *Store) updateSubscription(id string, p model.Subscription) (model.Subscription, string, error) {
 	normalizeRoutes(&p.Routes)
 	ids, _ := json.Marshal(p.NodeIDs)
 	protocols, _ := json.Marshal(p.Protocols)
 	routes, _ := json.Marshal(p.Routes)
 	res, err := s.db.Exec(`UPDATE subscriptions SET name=?,node_ids=?,protocols=?,routes=?,enabled=?,updated_at=? WHERE id=?`, p.Name, string(ids), string(protocols), string(routes), p.Enabled, time.Now().Unix(), id)
 	if err != nil {
-		return p, err
+		return p, "", err
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
-		return p, sql.ErrNoRows
+		return p, "", sql.ErrNoRows
 	}
 	return s.subscription(id)
 }
-func (s *Store) rotateSubscription(id string) (string, error) {
+func (s *Store) rotateSubscription(id string) (model.Subscription, string, error) {
 	token := RandomToken()
-	res, err := s.db.Exec(`UPDATE subscriptions SET token_hash=?,updated_at=? WHERE id=?`, hash(token), time.Now().Unix(), id)
+	tokenEnc, err := s.seal(token)
 	if err != nil {
-		return "", err
+		return model.Subscription{}, "", err
+	}
+	res, err := s.db.Exec(`UPDATE subscriptions SET token_hash=?,token_enc=?,updated_at=? WHERE id=?`, hash(token), tokenEnc, time.Now().Unix(), id)
+	if err != nil {
+		return model.Subscription{}, "", err
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
-		return "", sql.ErrNoRows
+		return model.Subscription{}, "", sql.ErrNoRows
 	}
-	return token, nil
+	return s.subscription(id)
 }
 func (s *Store) deleteSubscription(id string) (bool, error) {
 	res, err := s.db.Exec(`DELETE FROM subscriptions WHERE id=?`, id)

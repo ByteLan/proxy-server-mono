@@ -201,8 +201,11 @@ class BootstrapTest(unittest.TestCase):
         return result, stage
 
     def test_manager_staging_main_and_private_redirect(self):
-        result, _ = self.run_bootstrap()
+        result, stage = self.run_bootstrap(extra=['--http-sub-listen', '0.0.0.0:9080', '--http-sub-public-url', 'http://203.0.113.35:9080'])
         self.assertIn('main-222222222222', result.stdout)
+        env_text = (stage / 'etc/proxy-manage-server/manager.env').read_text()
+        self.assertIn('HTTP_SUB_LISTEN=0.0.0.0:9080', env_text)
+        self.assertIn('HTTP_SUB_PUBLIC_URL=http://203.0.113.35:9080', env_text)
         self.assertEqual(set(self.fixture['api_auth']), {'Bearer ' + READ_TOKEN})
         self.assertTrue(self.fixture['storage_auth'])
         self.assertEqual(set(self.fixture['storage_auth']), {None})

@@ -222,3 +222,94 @@ func TestSiteRoutesPersistenceNodeDeletionAndLegacyMigration(t *testing.T) {
 		t.Fatalf("GLOBAL first proxy = %s, want %s", groups[clash.GroupGlobal][0], clash.GroupGeneral)
 	}
 }
+
+func TestRepeatableSubscriptionURLViewingAndDualPortHTTPSubListener(t *testing.T) {
+	dir := t.TempDir()
+	s, err := New(Config{
+		Listen:           "127.0.0.1:0",
+		DataDir:          dir,
+		AdminToken:       adminTestToken,
+		EnrollToken:      enrollTestToken,
+		PublicURL:        "https://203.0.113.35:9443",
+		HTTPSubListen:    "127.0.0.1:19080",
+		HTTPSubPublicURL: "http://203.0.113.35:9080",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Store.Close() })
+	if s.SubHTTP == nil {
+		t.Fatal("expected SubHTTP listener to be initialized")
+	}
+
+	enroll(t, s, "sg01", "203.0.113.35")
+	raw := mustCode(t, s, "POST", "/api/admin/subscriptions", adminTestToken, model.Subscription{
+		Name:    "daily",
+		NodeIDs: []string{"sg01"},
+		Enabled: true,
+	}, 201)
+	var created struct {
+		Subscription model.Subscription `json:"subscription"`
+		URL          string             `json:"url"`
+		HTTPURL      string             `json:"http_url"`
+	}
+	if err := json.Unmarshal(raw, &created); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(created.URL, "https://203.0.113.35:9443/sub/") || !strings.HasPrefix(created.HTTPURL, "http://203.0.113.35:9080/sub/") {
+		t.Fatalf("unexpected URLs on create: url=%q http_url=%q", created.URL, created.HTTPURL)
+	}
+	tok := strings.TrimPrefix(created.URL, "https://203.0.113.35:9443/sub/")
+
+	// Encrypted token in SQLite must never store raw subscription token in plaintext.
+	var rawEnc []byte
+	if err := s.Store.db.QueryRow(`SELECT token_enc FROM subscriptions WHERE id=?`, created.Subscription.ID).Scan(&rawEnc); err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(rawEnc, []byte(tok)) {
+		t.Fatal("subscription token stored in plaintext in SQLite")
+	}
+
+	// Admin GET /api/admin/subscriptions repeatedly returns both URLs (no burn-after-reading).
+	listRaw := mustCode(t, s, "GET", "/api/admin/subscriptions", adminTestToken, nil, 200)
+	var listed []model.Subscription
+	if err := json.Unmarshal(listRaw, &listed); err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 || listed[0].URL != created.URL || listed[0].HTTPURL != created.HTTPURL {
+		t.Fatalf("subscription list did not persist viewable URLs: %+v", listed)
+	}
+
+	// SubHTTP serves /healthz and /sub/:token, and strictly rejects /api/admin/* and /api/agent/*.
+	subRes := ut.PerformRequest(s.SubHTTP.Engine, "GET", "/sub/"+tok, nil)
+	if subRes.Code != 200 || !bytes.Contains(subRes.Result().Body(), []byte("203.0.113.35")) {
+		t.Fatalf("SubHTTP /sub/:token failed: code=%d body=%s", subRes.Code, subRes.Result().Body())
+	}
+	for _, blocked := range []string{"/api/admin/nodes", "/api/admin/subscriptions", "/api/agent/register", "/"} {
+		res := ut.PerformRequest(s.SubHTTP.Engine, "GET", blocked, nil, ut.Header{Key: "Authorization", Value: "Bearer " + adminTestToken})
+		if res.Code != 404 {
+			t.Fatalf("SubHTTP unexpectedly exposed %s (status %d)", blocked, res.Code)
+		}
+	}
+
+	// Rotating invalidates old URL on SubHTTP and updates the viewable URL in GET /subscriptions.
+	rotRaw := mustCode(t, s, "POST", "/api/admin/subscriptions/"+created.Subscription.ID+"/rotate", adminTestToken, nil, 200)
+	var rotated struct {
+		Subscription model.Subscription `json:"subscription"`
+		URL          string             `json:"url"`
+		HTTPURL      string             `json:"http_url"`
+	}
+	if err := json.Unmarshal(rotRaw, &rotated); err != nil {
+		t.Fatal(err)
+	}
+	if rotated.HTTPURL == created.HTTPURL || rotated.Subscription.HTTPURL != rotated.HTTPURL {
+		t.Fatalf("rotate did not return new HTTPURL: %+v", rotated)
+	}
+	if ut.PerformRequest(s.SubHTTP.Engine, "GET", "/sub/"+tok, nil).Code != 404 {
+		t.Fatal("old subscription token still worked on SubHTTP after rotate")
+	}
+	newTok := strings.TrimPrefix(rotated.HTTPURL, "http://203.0.113.35:9080/sub/")
+	if ut.PerformRequest(s.SubHTTP.Engine, "GET", "/sub/"+newTok, nil).Code != 200 {
+		t.Fatal("new subscription token failed on SubHTTP after rotate")
+	}
+}

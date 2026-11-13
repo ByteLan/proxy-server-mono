@@ -104,6 +104,7 @@ sudo bash ./scripts/install.sh manager \
 ```
 
 - 若管理端直接提供 HTTPS（无需前置反向代理），在 `--` 后替换为：`--listen 0.0.0.0:8443 --public-url https://manager.example.com:8443 --tls-cert /path/fullchain.pem --tls-key /path/privkey.pem`。
+- **纯 IP 无域名环境兼容 Clash 一键导入（双端口模式）**：自签 IP HTTPS 证书会被 Clash 客户端默认拦截；可额外追加 `--http-sub-listen 0.0.0.0:9080 --http-sub-public-url http://<公网IP>:9080`（该 HTTP 端口**仅暴露只读 `/sub/:token` 与 `/healthz`**，管理后台与节点心跳仍强制走 HTTPS）。后台订阅列表支持**随时反复查看、复制 HTTP/HTTPS 订阅链接或一键重置链接**。
 - 首次初始化自动生成的 `ADMIN_TOKEN`（后台登录令牌）与 `ENROLL_TOKEN`（节点注册准入令牌）保存在 `/etc/proxy-manage-server/manager.env`（`0600`）。
 
 ### 4. 安装代理节点（proxy-server）

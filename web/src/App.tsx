@@ -95,13 +95,13 @@ export default function App() {
   const [subEnabled, setSubEnabled] = useState(true);
   const [saving, setSaving] = useState(false);
   const [pendingSubIDs, setPendingSubIDs] = useState<string[]>([]);
-  const [newURL, setNewURL] = useState('');
+  const [linkSub, setLinkSub] = useState<Subscription | null>(null);
   const [preview, setPreview] = useState<{ name: string; yaml: string } | null>(null);
   const mounted = useRef(true);
 
   const logout = useCallback(() => {
     sessionStorage.removeItem(TOKEN_KEY); setToken(''); setNodes([]); setSubscriptions([]);
-    setNodeEditor(null); setSubEditor(null); setNewURL(''); setPreview(null); setSelectedIDs([]);
+    setNodeEditor(null); setSubEditor(null); setLinkSub(null); setPreview(null); setSelectedIDs([]);
   }, []);
 
   const handleError = useCallback((error: unknown) => {
@@ -118,6 +118,7 @@ export default function App() {
       ]);
       if (!mounted.current) return;
       setNodes(nextNodes); setSubscriptions(nextSubs); setLoadError('');
+      setLinkSub((current) => (current ? nextSubs.find((item) => item.id === current.id) || null : null));
       setSelectedIDs((current) => current.filter((id) => nextNodes.some((node) => node.id === id)));
       setUpdatedAt(new Date().toLocaleTimeString('zh-CN', { hour12: false }));
     } catch (error) {
@@ -176,8 +177,8 @@ export default function App() {
     };
     try {
       if (subEditor === 'new') {
-        const result = await request<{ subscription: Subscription; url: string }>(token, '/subscriptions', { method: 'POST', body: JSON.stringify(body) });
-        setNewURL(result.url); setPage('subscriptions');
+        const result = await request<{ subscription: Subscription; url: string; http_url?: string }>(token, '/subscriptions', { method: 'POST', body: JSON.stringify(body) });
+        setLinkSub({ ...result.subscription, url: result.url, http_url: result.http_url }); setPage('subscriptions');
       } else {
         await request(token, `/subscriptions/${encodeURIComponent(subEditor.id)}`, { method: 'PUT', body: JSON.stringify(body) });
         Message.success('订阅已更新，Clash Verge 下次刷新将获取新配置');
@@ -217,9 +218,19 @@ export default function App() {
   }
   async function rotateSub(sub: Subscription) {
     try {
-      const result = await request<{ url: string }>(token, `/subscriptions/${encodeURIComponent(sub.id)}/rotate`, { method: 'POST' });
-      setNewURL(result.url); await refresh();
+      const result = await request<{ subscription: Subscription; url: string; http_url?: string }>(token, `/subscriptions/${encodeURIComponent(sub.id)}/rotate`, { method: 'POST' });
+      setLinkSub({ ...result.subscription, url: result.url, http_url: result.http_url });
+      Message.success('订阅链接已重置');
+      await refresh();
     } catch (error) { handleError(error); throw error; }
+  }
+  function confirmRotateSub(sub: Subscription) {
+    Modal.confirm({
+      title: `重置「${sub.name}」的订阅链接？`,
+      content: '原链接将立即失效，重置后生成的新链接仍可随时查看与复制。客户端已下载的节点凭据不受影响。',
+      okText: '确认重置',
+      onOk: () => rotateSub(sub),
+    });
   }
   async function previewSub(sub: Subscription) {
     try {
@@ -291,7 +302,7 @@ export default function App() {
     { title: '协议范围', width: 160, render: (_, sub) => <span className="muted">{sub.protocols.length ? sub.protocols.map(protocolLabel).join(' / ') : '全部协议'}</span> },
     { title: '状态', width: 85, render: (_, sub) => <Switch aria-label={`${sub.enabled ? '停用' : '启用'}订阅 ${sub.name}`} checked={sub.enabled} loading={pendingSubIDs.includes(sub.id)} disabled={pendingSubIDs.includes(sub.id)} size="small" onChange={() => void toggleSub(sub)} /> },
     { title: '最后更新', width: 165, render: (_, sub) => <span className="muted">{formatTime(sub.updated_at)}</span> },
-    { title: '操作', width: 255, fixed: 'right', render: (_, sub) => <Space size={1}><Button type="text" size="small" onClick={() => openSub(sub)}>编辑分流</Button><Button type="text" size="small" onClick={() => void previewSub(sub)}>预览</Button><Button type="text" size="small" onClick={() => Modal.confirm({ title: '重置订阅链接？', content: '原链接将立即失效。请把新链接重新添加到 Clash Verge。已下载的代理凭据仍然有效。', okText: '重置链接', onOk: () => rotateSub(sub) })}>重置链接</Button><Button type="text" status="danger" size="small" onClick={() => Modal.confirm({ title: `删除订阅「${sub.name}」？`, content: '订阅链接将失效，Clash Verge 将无法继续从这个链接更新。', okText: '删除订阅', okButtonProps: { status: 'danger' }, onOk: () => removeSub(sub) })}>删除</Button></Space> },
+    { title: '操作', width: 300, fixed: 'right', render: (_, sub) => <Space size={1}><Button type="text" size="small" onClick={() => setLinkSub(sub)}>查看链接</Button><Button type="text" size="small" onClick={() => openSub(sub)}>编辑分流</Button><Button type="text" size="small" onClick={() => void previewSub(sub)}>预览</Button><Button type="text" size="small" onClick={() => confirmRotateSub(sub)}>重置链接</Button><Button type="text" status="danger" size="small" onClick={() => Modal.confirm({ title: `删除订阅「${sub.name}」？`, content: '订阅链接将失效，Clash Verge 将无法继续从这个链接更新。', okText: '删除订阅', okButtonProps: { status: 'danger' }, onOk: () => removeSub(sub) })}>删除</Button></Space> },
   ];
 
   if (!token) return <Login onLogin={login} />;
@@ -379,10 +390,53 @@ export default function App() {
       <div className="switch-field"><div><strong>启用订阅</strong><p>停用后，链接暂时无法获取配置。</p></div><Switch checked={subEnabled} onChange={setSubEnabled} /></div>
       {subEditor !== 'new' && <Alert type="success" content="修改通用或专属节点不会改变订阅链接。在 Clash Verge 中更新该订阅即可同步最新配置。" />}
     </Modal>
-    <Modal title="订阅链接已生成" visible={Boolean(newURL)} onCancel={() => setNewURL('')} footer={<Button type="primary" onClick={() => setNewURL('')}>我已保存链接</Button>} style={{ width: 600 }} unmountOnExit>
-      <Alert type="warning" content="链接仅在本次生成时显示，关闭前请保存。持有链接的人可以获取所选节点的代理凭据。" />
-      <div className="url-box"><Input.TextArea aria-label="订阅链接" readOnly autoSize={{ minRows: 2, maxRows: 4 }} value={newURL} /><Button icon={<IconCopy />} onClick={() => void copy(newURL)}>复制链接</Button></div>
-      <div className="subscription-steps"><strong>在 Clash Verge 中使用</strong><ol><li>打开「订阅」，创建远程订阅。</li><li>粘贴链接并导入，按需开启自动更新。</li><li>此后在控制台增删订阅或专属节点，刷新该订阅即可同步。</li></ol></div>
+    <Modal
+      title={linkSub ? `订阅链接 · ${linkSub.name}` : '订阅链接'}
+      visible={Boolean(linkSub)}
+      onCancel={() => setLinkSub(null)}
+      footer={linkSub ? <Space><Button onClick={() => confirmRotateSub(linkSub)}>重置链接</Button><Button type="primary" onClick={() => setLinkSub(null)}>关闭</Button></Space> : null}
+      style={{ width: 640 }}
+      unmountOnExit
+    >
+      <Alert type="info" content="订阅链接可随时在此重复查看与复制；如链接泄露，点击下方「重置链接」即可立即作废旧链接并生成新链接。" />
+      {linkSub?.http_url ? (
+        <>
+          <div className="url-section">
+            <div className="url-section-header">
+              <strong>HTTP 订阅链接（纯 IP 无域名环境推荐 · Clash 直接一键导入）</strong>
+              <Tag size="small" color="green">免证书校验</Tag>
+            </div>
+            <div className="url-box">
+              <Input.TextArea aria-label="HTTP 订阅链接" readOnly autoSize={{ minRows: 2, maxRows: 4 }} value={linkSub.http_url} />
+              <Button type="primary" icon={<IconCopy />} onClick={() => void copy(linkSub.http_url || '')}>复制 HTTP 链接</Button>
+            </div>
+          </div>
+          {linkSub.url && (
+            <div className="url-section">
+              <div className="url-section-header">
+                <strong>HTTPS 订阅链接（已绑定域名公共证书，或客户端开启允许无效证书时使用）</strong>
+                <Tag size="small" color="arcoblue">TLS</Tag>
+              </div>
+              <div className="url-box">
+                <Input.TextArea aria-label="HTTPS 订阅链接" readOnly autoSize={{ minRows: 2, maxRows: 4 }} value={linkSub.url} />
+                <Button icon={<IconCopy />} onClick={() => void copy(linkSub.url || '')}>复制 HTTPS 链接</Button>
+              </div>
+            </div>
+          )}
+        </>
+      ) : linkSub?.url ? (
+        <div className="url-section">
+          <div className="url-box">
+            <Input.TextArea aria-label="订阅链接" readOnly autoSize={{ minRows: 2, maxRows: 4 }} value={linkSub.url} />
+            <Button type="primary" icon={<IconCopy />} onClick={() => void copy(linkSub.url || '')}>复制链接</Button>
+          </div>
+        </div>
+      ) : (
+        <div className="url-section">
+          <Alert type="warning" content="该订阅创建于旧版本，尚未保存可查看链接。点击下方「重置链接」生成一次后即可永久反复查看。" />
+        </div>
+      )}
+      <div className="subscription-steps"><strong>在 Clash Verge 中使用</strong><ol><li>打开「订阅」，粘贴上方链接直接导入（纯 IP 环境优先复制 HTTP 订阅链接）。</li><li>此后在控制台增删节点或调整 Claude / ChatGPT / Google 专属分流，无需更换链接，在 Clash 中点刷新即可同步。</li></ol></div>
     </Modal>
     <Modal title={`配置预览 · ${preview?.name || ''}`} visible={Boolean(preview)} onCancel={() => setPreview(null)} footer={<Space><Button onClick={downloadYAML}>下载 YAML</Button><Button icon={<IconCopy />} onClick={() => void copy(preview?.yaml || '')}>复制配置</Button><Button type="primary" onClick={() => setPreview(null)}>关闭</Button></Space>} style={{ width: 'min(820px, 94vw)' }} unmountOnExit>
       <Alert type="warning" content="配置包含真实代理凭据，请勿公开分享或粘贴到日志。" /><pre className="yaml-preview">{preview?.yaml}</pre>

@@ -75,6 +75,8 @@ type Subscription struct {
 	Protocols []string   `json:"protocols"`
 	Routes    SiteRoutes `json:"routes"`
 	Enabled   bool       `json:"enabled"`
+	URL       string     `json:"url,omitempty"`
+	HTTPURL   string     `json:"http_url,omitempty"`
 	CreatedAt int64      `json:"created_at"`
 	UpdatedAt int64      `json:"updated_at"`
 }
