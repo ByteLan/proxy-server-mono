@@ -13,7 +13,7 @@ import {
   buildOnboardingMarkdown, buildOnboardingSteps, createInitialOnboardingForm,
   suggestNextNodeName, type OnboardingForm, type OnboardingMode, type ReleaseChannel,
 } from './onboarding';
-import type { OnboardingDefaults, ProxyNode, SiteRoutes, Subscription, SubscriptionInput } from './types';
+import type { BlockedNode, OnboardingDefaults, ProxyNode, SiteRoutes, Subscription, SubscriptionInput } from './types';
 
 const TOKEN_KEY = 'proxy-console-admin-token';
 const protocolOptions = [
@@ -439,7 +439,9 @@ function OnboardingGuide({
 export default function App() {
   const [token, setToken] = useState(() => sessionStorage.getItem(TOKEN_KEY) || localStorage.getItem(TOKEN_KEY) || '');
   const [page, setPage] = useState<'nodes' | 'subscriptions' | 'onboarding'>('nodes');
+  const [nodeTab, setNodeTab] = useState<'active' | 'blocked'>('active');
   const [nodes, setNodes] = useState<ProxyNode[]>([]);
+  const [blockedNodes, setBlockedNodes] = useState<BlockedNode[]>([]);
   const [subscriptions, setSubscriptions] = useState<Subscription[]>([]);
   const [onboardingDefaults, setOnboardingDefaults] = useState<OnboardingDefaults | null>(null);
   const [loading, setLoading] = useState(true);
@@ -465,8 +467,8 @@ export default function App() {
   const logout = useCallback(() => {
     sessionStorage.removeItem(TOKEN_KEY); localStorage.removeItem(TOKEN_KEY);
     window.history.replaceState({}, '', '/');
-    setToken(''); setNodes([]); setSubscriptions([]); setOnboardingDefaults(null);
-    setNodeEditor(null); setSubEditor(null); setLinkSub(null); setPreview(null); setSelectedIDs([]);
+    setToken(''); setNodes([]); setBlockedNodes([]); setSubscriptions([]); setOnboardingDefaults(null);
+    setNodeTab('active'); setNodeEditor(null); setSubEditor(null); setLinkSub(null); setPreview(null); setSelectedIDs([]);
   }, []);
 
   const handleError = useCallback((error: unknown) => {
@@ -478,11 +480,13 @@ export default function App() {
     if (!token) return;
     if (visible) setLoading(true);
     try {
-      const [nextNodes, nextSubs] = await Promise.all([
-        request<ProxyNode[]>(token, '/nodes'), request<Subscription[]>(token, '/subscriptions'),
+      const [nextNodes, nextBlocked, nextSubs] = await Promise.all([
+        request<ProxyNode[]>(token, '/nodes'),
+        request<BlockedNode[]>(token, '/blocked-nodes'),
+        request<Subscription[]>(token, '/subscriptions'),
       ]);
       if (!mounted.current) return;
-      setNodes(nextNodes); setSubscriptions(nextSubs); setLoadError('');
+      setNodes(nextNodes); setBlockedNodes(nextBlocked); setSubscriptions(nextSubs); setLoadError('');
       setLinkSub((current) => (current ? nextSubs.find((item) => item.id === current.id) || null : null));
       setSelectedIDs((current) => current.filter((id) => nextNodes.some((node) => node.id === id)));
       setUpdatedAt(new Date().toLocaleTimeString('zh-CN', { hour12: false }));
@@ -562,7 +566,19 @@ export default function App() {
   async function removeNode(node: ProxyNode) {
     try {
       await request(token, `/nodes/${encodeURIComponent(node.id)}`, { method: 'DELETE' });
-      Message.success('节点已删除，订阅将在下次刷新时移除它'); await refresh();
+      Message.success('节点已删除；若其 proxy-server 在线或重新开机上线，将自动重新登录恢复展示'); await refresh();
+    } catch (error) { handleError(error); throw error; }
+  }
+  async function blockNode(node: ProxyNode) {
+    try {
+      await request(token, `/nodes/${encodeURIComponent(node.id)}/block`, { method: 'POST' });
+      Message.success('节点已屏蔽并移入黑名单，订阅将在下次刷新时剔除它'); await refresh();
+    } catch (error) { handleError(error); throw error; }
+  }
+  async function unblockNode(item: BlockedNode) {
+    try {
+      await request(token, `/blocked-nodes/${encodeURIComponent(item.id)}`, { method: 'DELETE' });
+      Message.success('已解除屏蔽；若该机器在线，将在下次心跳时自动重新登录'); await refresh();
     } catch (error) { handleError(error); throw error; }
   }
   async function toggleSub(sub: Subscription) {
@@ -633,6 +649,10 @@ export default function App() {
     const query = search.trim().toLowerCase();
     return nodes.filter((node) => [node.name, node.id, ...node.endpoints.map((ep) => ep.server)].some((value) => value.toLowerCase().includes(query)));
   }, [nodes, search]);
+  const filteredBlockedNodes = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    return blockedNodes.filter((item) => [item.name, item.id, item.server || ''].some((value) => value.toLowerCase().includes(query)));
+  }, [blockedNodes, search]);
   const nodeColumns: TableColumnProps<ProxyNode>[] = [
     { title: '节点', dataIndex: 'name', width: 220, render: (_, node) => <div className="node-identity"><div className="node-icon"><IconDesktop /></div><div><strong>{node.name}</strong><div className="muted mono">{node.os || '—'} / {node.arch || '—'}</div></div></div> },
     { title: 'Agent 心跳', width: 125, render: (_, node) => <Badge status={node.online ? 'success' : 'default'} text={node.online ? '在线' : '离线'} /> },
@@ -640,7 +660,70 @@ export default function App() {
     { title: '协议入口', width: 260, render: (_, node) => <Space direction="vertical" size={5}>{node.endpoints.map((ep) => <div className="endpoint" key={ep.id}><Tag size="small" color={ep.type === 'hysteria2' ? 'arcoblue' : 'gray'}>{protocolLabel(ep.type)}</Tag><span className="mono">{endpoint(ep.server, ep.port)}</span></div>)}</Space> },
     { title: '最后心跳', width: 170, render: (_, node) => <span className="muted">{formatTime(node.last_seen)}</span> },
     { title: '订阅可用', width: 100, render: (_, node) => <Tag bordered={false} color={node.enabled ? 'green' : 'gray'}>{node.enabled ? '已启用' : '已停用'}</Tag> },
-    { title: '操作', width: 135, fixed: 'right', render: (_, node) => <Space size={4}><Button type="text" size="small" onClick={() => openNode(node)}>编辑</Button><Button type="text" status="danger" size="small" onClick={() => Modal.confirm({ title: `删除节点「${node.name}」？`, content: '该节点将从订阅中移除，Agent 身份将被撤销。重新接入需要创建新的节点身份。', okText: '删除节点', okButtonProps: { status: 'danger' }, onOk: () => removeNode(node) })}>删除</Button></Space> },
+    {
+      title: '操作',
+      width: 190,
+      fixed: 'right',
+      render: (_, node) => (
+        <Space size={2}>
+          <Button type="text" size="small" onClick={() => openNode(node)}>编辑</Button>
+          <Button
+            type="text"
+            status="warning"
+            size="small"
+            onClick={() => Modal.confirm({
+              title: `屏蔽节点「${node.name}」？`,
+              content: '该节点将从当前列表及所有订阅中剔除，并移入「黑名单节点」。屏蔽期间其 proxy-server 无法重新登录或上报心跳；后续可在「黑名单节点」中随时解除屏蔽。',
+              okText: '确认屏蔽',
+              okButtonProps: { status: 'warning' },
+              onOk: () => blockNode(node),
+            })}
+          >
+            屏蔽
+          </Button>
+          <Button
+            type="text"
+            status="danger"
+            size="small"
+            onClick={() => Modal.confirm({
+              title: `删除节点「${node.name}」？`,
+              content: '该节点将从当前列表及所有订阅中移除（不加入黑名单）。若该机器上的 proxy-server 仍在运行或后续开机上线，它会自动重新登录并恢复展示到节点列表；如需禁止其重连，请使用「屏蔽」。',
+              okText: '确认删除',
+              okButtonProps: { status: 'danger' },
+              onOk: () => removeNode(node),
+            })}
+          >
+            删除
+          </Button>
+        </Space>
+      ),
+    },
+  ];
+  const blockedColumns: TableColumnProps<BlockedNode>[] = [
+    { title: '黑名单节点', dataIndex: 'name', width: 220, render: (_, item) => <div className="node-identity"><div className="node-icon"><IconDesktop /></div><div><strong>{item.name || item.id}</strong><div className="muted mono">{item.os || '—'} / {item.arch || '—'}</div></div></div> },
+    { title: '节点 ID', dataIndex: 'id', width: 250, render: (id: string) => <span className="mono">{id}</span> },
+    { title: '最后公网地址', dataIndex: 'server', width: 190, render: (server?: string) => <span className="mono">{server || '—'}</span> },
+    { title: 'Agent 版本', dataIndex: 'version', width: 170, render: (ver?: string) => <span className="mono muted">{ver || '—'}</span> },
+    { title: '屏蔽时间', dataIndex: 'blocked_at', width: 175, render: (ts: number) => <span className="muted">{ts ? formatTime(ts) : '历史屏蔽'}</span> },
+    {
+      title: '操作',
+      width: 120,
+      fixed: 'right',
+      render: (_, item) => (
+        <Button
+          type="text"
+          size="small"
+          onClick={() => Modal.confirm({
+            title: `解除屏蔽「${item.name || item.id}」？`,
+            content: '移出黑名单后，若该机器上的 proxy-server 仍在运行或后续开机上线，将在下次心跳时自动重新登录并回到「节点列表」。',
+            okText: '解除屏蔽',
+            onOk: () => unblockNode(item),
+          })}
+        >
+          解除屏蔽
+        </Button>
+      ),
+    },
   ];
   const subColumns: TableColumnProps<Subscription>[] = [
     { title: '订阅名称', dataIndex: 'name', width: 200, render: (_, sub) => <div className="node-identity"><div className="node-icon"><IconLink /></div><div><strong>{sub.name}</strong><div className="muted">动态节点与分流配置</div></div></div> },
@@ -723,14 +806,61 @@ export default function App() {
             </div>
             {loadError && <Alert className="load-error" type="error" title={loadError} content="暂时无法刷新数据，下面可能是上次成功获取的状态。" />}
             <Card bordered={false} className="content-card">
-              <div className="table-toolbar"><div><h2>{page === 'nodes' ? '节点列表' : '订阅列表'}<Tag bordered={false}>{page === 'nodes' ? nodes.length : subscriptions.length}</Tag></h2><p>{page === 'nodes' ? '心跳在线与代理核心状态独立展示。' : '编辑节点与专属分流后无需更换链接，在 Clash Verge 中更新订阅即可。'}</p></div><Space wrap>{page === 'nodes' && <Input aria-label="搜索节点" allowClear prefix={<IconSearch />} placeholder="搜索节点名称或地址" value={search} onChange={setSearch} style={{ width: 220 }} />}<Tooltip content="每 15 秒自动刷新"><Button aria-label="刷新数据" icon={<IconRefresh />} loading={loading} onClick={() => void refresh(true)}>刷新</Button></Tooltip></Space></div>
-              {page === 'nodes' && selectedIDs.length > 0 && <div className="selection-bar"><span>已选择 <strong>{selectedIDs.length}</strong> 个节点</span><Space><Button size="small" type="text" onClick={() => setSelectedIDs([])}>取消选择</Button><Button size="small" type="primary" onClick={() => openSub('new')}>用所选节点创建订阅</Button></Space></div>}
+              <div className="table-toolbar">
+                <div>
+                  {page === 'nodes' ? (
+                    <>
+                      <div className="node-tab-bar">
+                        <Radio.Group type="button" value={nodeTab} onChange={(v) => setNodeTab(v as 'active' | 'blocked')}>
+                          <Radio value="active">节点列表 ({nodes.length})</Radio>
+                          <Radio value="blocked">黑名单节点 ({blockedNodes.length})</Radio>
+                        </Radio.Group>
+                      </div>
+                      <p>
+                        {nodeTab === 'active'
+                          ? '心跳在线与代理核心状态独立展示；「删除」后在线机器会自动重新登录，「屏蔽」则移入黑名单禁止重连。'
+                          : '处于黑名单中的节点将被拒绝心跳与注册；解除屏蔽后，在线机器将在下次心跳时自动重新登录恢复。'}
+                      </p>
+                    </>
+                  ) : (
+                    <>
+                      <h2>订阅列表<Tag bordered={false}>{subscriptions.length}</Tag></h2>
+                      <p>编辑节点与专属分流后无需更换链接，在 Clash Verge 中更新订阅即可。</p>
+                    </>
+                  )}
+                </div>
+                <Space wrap>
+                  {page === 'nodes' && (
+                    <Input
+                      aria-label="搜索节点"
+                      allowClear
+                      prefix={<IconSearch />}
+                      placeholder={nodeTab === 'active' ? '搜索节点名称或地址' : '搜索黑名单节点名称、ID 或地址'}
+                      value={search}
+                      onChange={setSearch}
+                      style={{ width: 240 }}
+                    />
+                  )}
+                  <Tooltip content="每 15 秒自动刷新">
+                    <Button aria-label="刷新数据" icon={<IconRefresh />} loading={loading} onClick={() => void refresh(true)}>刷新</Button>
+                  </Tooltip>
+                </Space>
+              </div>
+              {page === 'nodes' && nodeTab === 'active' && selectedIDs.length > 0 && <div className="selection-bar"><span>已选择 <strong>{selectedIDs.length}</strong> 个节点</span><Space><Button size="small" type="text" onClick={() => setSelectedIDs([])}>取消选择</Button><Button size="small" type="primary" onClick={() => openSub('new')}>用所选节点创建订阅</Button></Space></div>}
               <Spin loading={loading} style={{ display: 'block' }}>
-                {page === 'nodes' ? <Table rowKey="id" columns={nodeColumns} data={filteredNodes} scroll={{ x: 1170 }} pagination={{ pageSize: 10, sizeCanChange: true, showTotal: true }} rowSelection={{ selectedRowKeys: selectedIDs, onChange: (keys) => setSelectedIDs(keys.map(String)) }} noDataElement={<Empty description={search ? '没有匹配的节点，试试其他关键词。' : <span>暂无节点。前往 <a href="#onboarding" onClick={(e) => { e.preventDefault(); setPage('onboarding'); }}>节点接入指南</a> 获取一键安装与收编命令。</span>} />} /> : <Table rowKey="id" columns={subColumns} data={subscriptions} scroll={{ x: 1375 }} pagination={{ pageSize: 10, showTotal: true }} noDataElement={<Empty description="还没有订阅。创建订阅，选择要分发到 Clash Verge 的节点。" />} />}
+                {page === 'nodes' ? (
+                  nodeTab === 'active' ? (
+                    <Table rowKey="id" columns={nodeColumns} data={filteredNodes} scroll={{ x: 1225 }} pagination={{ pageSize: 10, sizeCanChange: true, showTotal: true }} rowSelection={{ selectedRowKeys: selectedIDs, onChange: (keys) => setSelectedIDs(keys.map(String)) }} noDataElement={<Empty description={search ? '没有匹配的节点，试试其他关键词。' : <span>暂无节点。前往 <a href="#onboarding" onClick={(e) => { e.preventDefault(); setPage('onboarding'); }}>节点接入指南</a> 获取一键安装与收编命令。</span>} />} />
+                  ) : (
+                    <Table rowKey="id" columns={blockedColumns} data={filteredBlockedNodes} scroll={{ x: 1125 }} pagination={{ pageSize: 10, sizeCanChange: true, showTotal: true }} noDataElement={<Empty description={search ? '没有匹配的黑名单节点。' : '暂无黑名单节点。在「节点列表」中点击「屏蔽」可将节点移入此处。'} />} />
+                  )
+                ) : (
+                  <Table rowKey="id" columns={subColumns} data={subscriptions} scroll={{ x: 1375 }} pagination={{ pageSize: 10, showTotal: true }} noDataElement={<Empty description="还没有订阅。创建订阅，选择要分发到 Clash Verge 的节点。" />} />
+                )}
               </Spin>
               <div className="table-footer"><span><span className="tiny-dot green" /> 自动刷新 · 每 15 秒</span><span>{updatedAt ? `最后刷新 ${updatedAt}` : '正在连接管理服务'}</span></div>
             </Card>
-            <div className="context-note"><IconCheckCircle /><span>{page === 'nodes' ? '心跳在线表示 Agent 可以连接管理端；真实代理可用性仍取决于客户端网络。临时离线不会自动移除订阅中的节点。' : '专属分组使用 url-test 自动选择最低延迟协议，且组内节点全部失效时自动 REJECT 禁止直连；全局模式（GLOBAL）默认跟随 🌍 代理节点。'}</span></div>
+            <div className="context-note"><IconCheckCircle /><span>{page === 'nodes' ? '心跳在线表示 Agent 可以连接管理端；临时关机离线不会自动移除订阅中的节点。点击「删除」仅清理记录（机器在线会自动重登恢复），点击「屏蔽」则会将其加入黑名单禁止重连。' : '专属分组使用 url-test 自动选择最低延迟协议，且组内节点全部失效时自动 REJECT 禁止直连；全局模式（GLOBAL）默认跟随 🌍 代理节点。'}</span></div>
           </>
         )}
       </main>

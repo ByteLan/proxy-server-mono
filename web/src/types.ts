@@ -27,6 +27,16 @@ export interface ProxyNode {
   endpoints: Endpoint[];
 }
 
+export interface BlockedNode {
+  id: string;
+  name: string;
+  server?: string;
+  os?: string;
+  arch?: string;
+  version?: string;
+  blocked_at: number;
+}
+
 export interface RouteGroup {
   custom: boolean;
   node_ids: string[];

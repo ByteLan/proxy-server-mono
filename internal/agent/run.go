@@ -206,6 +206,7 @@ func (r *Runner) runTarget(
 		if ctx.Err() != nil {
 			return nil
 		}
+		justRegistered := false
 		endpoints, cores := snapshot(ctx)
 		var err error
 		if token == "" {
@@ -223,10 +224,8 @@ func (r *Runner) runTarget(
 					return fmt.Errorf("persist node token for %s: %w", p.target.URL, err)
 				}
 				token = response.Token
-			}
-			var status *httpStatusError
-			if errors.As(err, &status) && (status.Status == http.StatusUnauthorized || status.Status == http.StatusForbidden || status.Status == http.StatusConflict) {
-				return fmt.Errorf("enrollment refused by %s (HTTP %d); verify enrollment key or use a new node identity", p.target.URL, status.Status)
+				lastHash = ""
+				justRegistered = true
 			}
 		}
 		if token != "" {
@@ -239,9 +238,20 @@ func (r *Runner) runTarget(
 			err = post(ctx, p.client, p.target.URL+"/api/agent/heartbeat", token, request, nil)
 			if err == nil {
 				lastHash = hash
+			} else {
+				var status *httpStatusError
+				if errors.As(err, &status) && status.Status == http.StatusGone && validToken(p.enrollToken) {
+					token = ""
+					lastHash = ""
+					if !justRegistered {
+						r.log("manager %s reported node deleted (HTTP 410); re-enrolling automatically", p.target.URL)
+						backoff = minimum
+						continue
+					}
+				}
 			}
-			// A rejected persisted token is deliberately retained. In particular,
-			// never use the enrollment key to bypass an administrator's revocation.
+			// A rejected persisted token (HTTP 401/403 when blocked) is deliberately retained.
+			// Never use the enrollment key to bypass an administrator's block.
 		}
 		if ctx.Err() != nil {
 			return nil
@@ -250,7 +260,11 @@ func (r *Runner) runTarget(
 		if err != nil {
 			var status *httpStatusError
 			if errors.As(err, &status) {
-				r.log("manager %s request failed (HTTP %d); node token will not be replaced automatically", p.target.URL, status.Status)
+				if token == "" {
+					r.log("enrollment refused by %s (HTTP %d); proxy cores continue running, retrying with backoff", p.target.URL, status.Status)
+				} else {
+					r.log("manager %s request failed (HTTP %d); node token will not be replaced automatically", p.target.URL, status.Status)
+				}
 			} else {
 				r.log("manager %s unavailable; proxy cores continue running", p.target.URL)
 			}

@@ -5,6 +5,7 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
@@ -73,10 +74,13 @@ func Open(dir, key string) (*Store, error) {
 	}
 	db.SetMaxOpenConns(1)
 	fail := func(err error) (*Store, error) { db.Close(); return nil, err }
-	for _, q := range []string{"PRAGMA journal_mode=WAL", "PRAGMA busy_timeout=5000", "PRAGMA foreign_keys=ON", "PRAGMA cache_size=-4096", `CREATE TABLE IF NOT EXISTS nodes(id TEXT PRIMARY KEY,name TEXT NOT NULL,os TEXT NOT NULL,arch TEXT NOT NULL,version TEXT NOT NULL,enabled INTEGER NOT NULL DEFAULT 1,last_seen INTEGER NOT NULL,config_hash TEXT NOT NULL DEFAULT '',cores TEXT NOT NULL DEFAULT '[]',endpoints BLOB NOT NULL,token_hash TEXT NOT NULL UNIQUE)`, `CREATE TABLE IF NOT EXISTS revoked_nodes(id TEXT PRIMARY KEY)`, `CREATE TABLE IF NOT EXISTS subscriptions(id TEXT PRIMARY KEY,name TEXT NOT NULL,node_ids TEXT NOT NULL,protocols TEXT NOT NULL,routes TEXT NOT NULL DEFAULT '{}',enabled INTEGER NOT NULL,token_hash TEXT NOT NULL UNIQUE,token_enc BLOB,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL)`} {
+	for _, q := range []string{"PRAGMA journal_mode=WAL", "PRAGMA busy_timeout=5000", "PRAGMA foreign_keys=ON", "PRAGMA cache_size=-4096", `CREATE TABLE IF NOT EXISTS nodes(id TEXT PRIMARY KEY,name TEXT NOT NULL,os TEXT NOT NULL,arch TEXT NOT NULL,version TEXT NOT NULL,enabled INTEGER NOT NULL DEFAULT 1,last_seen INTEGER NOT NULL,config_hash TEXT NOT NULL DEFAULT '',cores TEXT NOT NULL DEFAULT '[]',endpoints BLOB NOT NULL,token_hash TEXT NOT NULL UNIQUE)`, `CREATE TABLE IF NOT EXISTS revoked_nodes(id TEXT PRIMARY KEY,name TEXT NOT NULL DEFAULT '',server TEXT NOT NULL DEFAULT '',os TEXT NOT NULL DEFAULT '',arch TEXT NOT NULL DEFAULT '',version TEXT NOT NULL DEFAULT '',blocked_at INTEGER NOT NULL DEFAULT 0)`, `CREATE TABLE IF NOT EXISTS subscriptions(id TEXT PRIMARY KEY,name TEXT NOT NULL,node_ids TEXT NOT NULL,protocols TEXT NOT NULL,routes TEXT NOT NULL DEFAULT '{}',enabled INTEGER NOT NULL,token_hash TEXT NOT NULL UNIQUE,token_enc BLOB,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL)`} {
 		if _, err = db.Exec(q); err != nil {
 			return fail(err)
 		}
+	}
+	if err = ensureRevokedNodesColumns(db); err != nil {
+		return fail(err)
 	}
 	if err = ensureSubscriptionColumns(db); err != nil {
 		return fail(err)
@@ -122,10 +126,50 @@ func (s *Store) register(r model.RegisterRequest) (string, error) {
 	_, err = s.db.Exec(`INSERT INTO nodes(id,name,os,arch,version,last_seen,endpoints,token_hash) VALUES(?,?,?,?,?,?,?,?)`, r.ID, r.Name, r.OS, r.Arch, r.Version, time.Now().Unix(), enc, hash(token))
 	return token, err
 }
-func (s *Store) nodeAuthorized(id, token string) bool {
+type nodeAuthResult int
+
+const (
+	nodeAuthDenied nodeAuthResult = iota
+	nodeAuthOK
+	nodeAuthDeleted
+)
+
+func (s *Store) checkNodeAuth(id, token string) (nodeAuthResult, error) {
+	if token == "" {
+		return nodeAuthDenied, nil
+	}
+	var blocked int
+	if err := s.db.QueryRow(`SELECT count(*) FROM revoked_nodes WHERE id=?`, id).Scan(&blocked); err != nil {
+		return nodeAuthDenied, err
+	}
+	if blocked > 0 {
+		return nodeAuthDenied, nil
+	}
+	var storedHash string
+	err := s.db.QueryRow(`SELECT token_hash FROM nodes WHERE id=?`, id).Scan(&storedHash)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nodeAuthDeleted, nil
+	}
+	if err != nil {
+		return nodeAuthDenied, err
+	}
+	if subtle.ConstantTimeCompare([]byte(storedHash), []byte(hash(token))) == 1 {
+		return nodeAuthOK, nil
+	}
+	return nodeAuthDenied, nil
+}
+func (s *Store) nodeEnrollConflict(id string) (blocked bool, enrolled bool, err error) {
 	var count int
-	err := s.db.QueryRow(`SELECT count(*) FROM nodes WHERE id=? AND token_hash=?`, id, hash(token)).Scan(&count)
-	return err == nil && count == 1
+	if err = s.db.QueryRow(`SELECT count(*) FROM revoked_nodes WHERE id=?`, id).Scan(&count); err != nil {
+		return false, false, err
+	}
+	if count > 0 {
+		return true, false, nil
+	}
+	if err = s.db.QueryRow(`SELECT count(*) FROM nodes WHERE id=?`, id).Scan(&count); err != nil {
+		return false, false, err
+	}
+	return false, count > 0, nil
 }
 func (s *Store) heartbeat(r model.HeartbeatRequest) error {
 	cores, err := json.Marshal(r.Cores)
@@ -192,26 +236,10 @@ func (s *Store) patchNode(id, name string, enabled bool) (bool, error) {
 	n, _ := res.RowsAffected()
 	return n > 0, nil
 }
-func (s *Store) deleteNode(id string) (bool, error) {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return false, err
-	}
-	defer tx.Rollback()
-	if _, err = tx.Exec(`INSERT OR IGNORE INTO revoked_nodes(id) SELECT id FROM nodes WHERE id=?`, id); err != nil {
-		return false, err
-	}
-	res, err := tx.Exec(`DELETE FROM nodes WHERE id=?`, id)
-	if err != nil {
-		return false, err
-	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		return false, nil
-	}
+func purgeNodeFromSubscriptions(tx *sql.Tx, id string) error {
 	rows, err := tx.Query(`SELECT id,node_ids,routes FROM subscriptions`)
 	if err != nil {
-		return false, err
+		return err
 	}
 	type subUpdate struct {
 		nodes  string
@@ -222,18 +250,18 @@ func (s *Store) deleteNode(id string) (bool, error) {
 		var sid, rawNodes, rawRoutes string
 		if err = rows.Scan(&sid, &rawNodes, &rawRoutes); err != nil {
 			rows.Close()
-			return false, err
+			return err
 		}
 		var ids []string
 		if err = json.Unmarshal([]byte(rawNodes), &ids); err != nil {
 			rows.Close()
-			return false, err
+			return err
 		}
 		var routes model.SiteRoutes
 		if rawRoutes != "" {
 			if err = json.Unmarshal([]byte(rawRoutes), &routes); err != nil {
 				rows.Close()
-				return false, err
+				return err
 			}
 		}
 		ids = removeID(ids, id)
@@ -248,15 +276,148 @@ func (s *Store) deleteNode(id string) (bool, error) {
 	err = rows.Err()
 	rows.Close()
 	if err != nil {
-		return false, err
+		return err
 	}
 	now := time.Now().Unix()
 	for sid, u := range updates {
 		if _, err = tx.Exec(`UPDATE subscriptions SET node_ids=?,routes=?,updated_at=? WHERE id=?`, u.nodes, u.routes, now, sid); err != nil {
-			return false, err
+			return err
 		}
 	}
+	return nil
+}
+func (s *Store) deleteNode(id string) (bool, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	res, err := tx.Exec(`DELETE FROM nodes WHERE id=?`, id)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return false, nil
+	}
+	if err = purgeNodeFromSubscriptions(tx, id); err != nil {
+		return false, err
+	}
 	return true, tx.Commit()
+}
+func (s *Store) blockNode(id string) (model.BlockedNode, bool, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return model.BlockedNode{}, false, err
+	}
+	defer tx.Rollback()
+	var item model.BlockedNode
+	item.ID = id
+	var enc []byte
+	err = tx.QueryRow(`SELECT name,os,arch,version,endpoints FROM nodes WHERE id=?`, id).Scan(&item.Name, &item.OS, &item.Arch, &item.Version, &enc)
+	if errors.Is(err, sql.ErrNoRows) {
+		err = tx.QueryRow(`SELECT id,name,server,os,arch,version,blocked_at FROM revoked_nodes WHERE id=?`, id).Scan(&item.ID, &item.Name, &item.Server, &item.OS, &item.Arch, &item.Version, &item.BlockedAt)
+		if errors.Is(err, sql.ErrNoRows) {
+			return model.BlockedNode{}, false, nil
+		}
+		if err != nil {
+			return model.BlockedNode{}, false, err
+		}
+		return item, true, nil
+	}
+	if err != nil {
+		return model.BlockedNode{}, false, err
+	}
+	var endpoints []model.Endpoint
+	if err = s.unseal(enc, &endpoints); err != nil {
+		return model.BlockedNode{}, false, err
+	}
+	for _, ep := range endpoints {
+		if ep.Server != "" {
+			item.Server = ep.Server
+			break
+		}
+	}
+	item.BlockedAt = time.Now().Unix()
+	if _, err = tx.Exec(
+		`INSERT INTO revoked_nodes(id,name,server,os,arch,version,blocked_at) VALUES(?,?,?,?,?,?,?)
+		 ON CONFLICT(id) DO UPDATE SET name=excluded.name,server=excluded.server,os=excluded.os,arch=excluded.arch,version=excluded.version,blocked_at=excluded.blocked_at`,
+		item.ID, item.Name, item.Server, item.OS, item.Arch, item.Version, item.BlockedAt,
+	); err != nil {
+		return model.BlockedNode{}, false, err
+	}
+	if _, err = tx.Exec(`DELETE FROM nodes WHERE id=?`, id); err != nil {
+		return model.BlockedNode{}, false, err
+	}
+	if err = purgeNodeFromSubscriptions(tx, id); err != nil {
+		return model.BlockedNode{}, false, err
+	}
+	if err = tx.Commit(); err != nil {
+		return model.BlockedNode{}, false, err
+	}
+	return item, true, nil
+}
+func (s *Store) blockedNodes() ([]model.BlockedNode, error) {
+	rows, err := s.db.Query(`SELECT id,name,server,os,arch,version,blocked_at FROM revoked_nodes ORDER BY blocked_at DESC,name ASC,id ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []model.BlockedNode{}
+	for rows.Next() {
+		var item model.BlockedNode
+		if err = rows.Scan(&item.ID, &item.Name, &item.Server, &item.OS, &item.Arch, &item.Version, &item.BlockedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+func (s *Store) unblockNode(id string) (bool, error) {
+	res, err := s.db.Exec(`DELETE FROM revoked_nodes WHERE id=?`, id)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+func ensureRevokedNodesColumns(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(revoked_nodes)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	existing := map[string]bool{}
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, ctype string
+		var dflt sql.NullString
+		if err = rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		existing[name] = true
+	}
+	if err = rows.Err(); err != nil {
+		return err
+	}
+	for _, col := range []struct {
+		name string
+		ddl  string
+	}{
+		{"name", `ALTER TABLE revoked_nodes ADD COLUMN name TEXT NOT NULL DEFAULT ''`},
+		{"server", `ALTER TABLE revoked_nodes ADD COLUMN server TEXT NOT NULL DEFAULT ''`},
+		{"os", `ALTER TABLE revoked_nodes ADD COLUMN os TEXT NOT NULL DEFAULT ''`},
+		{"arch", `ALTER TABLE revoked_nodes ADD COLUMN arch TEXT NOT NULL DEFAULT ''`},
+		{"version", `ALTER TABLE revoked_nodes ADD COLUMN version TEXT NOT NULL DEFAULT ''`},
+		{"blocked_at", `ALTER TABLE revoked_nodes ADD COLUMN blocked_at INTEGER NOT NULL DEFAULT 0`},
+	} {
+		if !existing[col.name] {
+			if _, err = db.Exec(col.ddl); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 func ensureSubscriptionColumns(db *sql.DB) error {
 	rows, err := db.Query(`PRAGMA table_info(subscriptions)`)

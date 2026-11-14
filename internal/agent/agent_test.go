@@ -301,6 +301,131 @@ func TestRevokedNodeTokenNeverReenrolls(t *testing.T) {
 	}
 }
 
+func TestDeletedAndUnblockedNodeAutonomouslyReenrollsOn410(t *testing.T) {
+	// Phases simulated by manager:
+	// 0 = deleted (heartbeat -> 410, register -> 201 token-after-delete -> switches to phase 1)
+	// 1 = active (heartbeat with token-after-delete -> 200)
+	// 2 = blocked (heartbeat -> 401, register must NEVER be called)
+	// 3 = unblocked (heartbeat -> 410, register -> 201 token-after-unblock -> switches to phase 4)
+	// 4 = active again (heartbeat with token-after-unblock -> 200)
+	var phase atomic.Int32
+	var registrations atomic.Int32
+	activeHeartbeats := make(chan model.HeartbeatRequest, 32)
+	blockedHeartbeats := make(chan struct{}, 32)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/agent/register":
+			if r.Header.Get("Authorization") != "Bearer enrollment-key" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			call := registrations.Add(1)
+			p := phase.Load()
+			switch p {
+			case 0:
+				phase.Store(1)
+				w.WriteHeader(http.StatusCreated)
+				_, _ = w.Write([]byte(`{"token":"token-after-delete"}`))
+			case 3:
+				phase.Store(4)
+				w.WriteHeader(http.StatusCreated)
+				_, _ = w.Write([]byte(`{"token":"token-after-unblock"}`))
+			default:
+				t.Errorf("unexpected registration call %d in phase %d", call, p)
+				w.WriteHeader(http.StatusConflict)
+			}
+		case "/api/agent/heartbeat":
+			var req model.HeartbeatRequest
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			switch phase.Load() {
+			case 0, 3:
+				w.WriteHeader(http.StatusGone)
+				_, _ = w.Write([]byte(`{"error":"node deleted; re-enrollment required"}`))
+			case 1:
+				if r.Header.Get("Authorization") != "Bearer token-after-delete" {
+					w.WriteHeader(http.StatusUnauthorized)
+					return
+				}
+				activeHeartbeats <- req
+				_, _ = w.Write([]byte(`{"ok":true}`))
+			case 2:
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(`{"error":"invalid node token"}`))
+				blockedHeartbeats <- struct{}{}
+			case 4:
+				if r.Header.Get("Authorization") != "Bearer token-after-unblock" {
+					w.WriteHeader(http.StatusUnauthorized)
+					return
+				}
+				activeHeartbeats <- req
+				_, _ = w.Write([]byte(`{"ok":true}`))
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	path, cfg := testConfig(t, server.URL)
+	if err := atomicWrite(cfg.TokenFile, []byte("stale-token-before-delete\n")); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	result := make(chan error, 1)
+	runner := Runner{
+		HeartbeatInterval: 10 * time.Millisecond,
+		RetryMin:          2 * time.Millisecond,
+		RetryMax:          5 * time.Millisecond,
+	}
+	go func() { result <- runner.Run(ctx, path) }()
+
+	// Phase 0 -> 1: deleted node receives 410 and immediately re-enrolls with full endpoints.
+	hbAfterDelete := heartbeat(t, activeHeartbeats)
+	if hbAfterDelete.Endpoints == nil || len(*hbAfterDelete.Endpoints) != 1 {
+		t.Fatalf("expected full endpoints on first heartbeat after autonomous re-login, got %+v", hbAfterDelete)
+	}
+	if registrations.Load() != 1 {
+		t.Fatalf("expected 1 registration after delete, got %d", registrations.Load())
+	}
+
+	// Phase 2: admin blocks node -> 401 on heartbeat, must NOT re-enroll.
+	phase.Store(2)
+	for range 3 {
+		select {
+		case <-blockedHeartbeats:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for blocked heartbeat")
+		}
+	}
+	if registrations.Load() != 1 {
+		t.Fatalf("blocked node attempted re-enrollment (registrations=%d)", registrations.Load())
+	}
+	// Drain any queued phase-1 heartbeats before unblocking.
+	for len(activeHeartbeats) > 0 {
+		<-activeHeartbeats
+	}
+
+	// Phase 3 -> 4: admin unblocks node -> 410 on heartbeat -> autonomous re-enrollment!
+	phase.Store(3)
+	hbAfterUnblock := heartbeat(t, activeHeartbeats)
+	if hbAfterUnblock.Endpoints == nil || len(*hbAfterUnblock.Endpoints) != 1 {
+		t.Fatalf("expected full endpoints after unblock re-login, got %+v", hbAfterUnblock)
+	}
+	if registrations.Load() != 2 {
+		t.Fatalf("expected 2 total registrations after unblock, got %d", registrations.Load())
+	}
+
+	cancel()
+	finish(t, result)
+	b, _ := os.ReadFile(cfg.TokenFile)
+	if string(b) != "token-after-unblock\n" {
+		t.Fatalf("unexpected persisted token after unblock: %q", string(b))
+	}
+}
+
 func TestSupervisorStopsCoreOnCancellation(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX signal test")

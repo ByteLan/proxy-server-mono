@@ -216,12 +216,40 @@ func (s *Server) routes() {
 		c.JSON(200, nodes)
 	})
 	admin.PATCH("/nodes/:id", s.patchNode)
+	admin.POST("/nodes/:id/block", func(_ context.Context, c *app.RequestContext) {
+		blocked, ok, err := s.Store.blockNode(c.Param("id"))
+		if err != nil {
+			internalError(c)
+		} else if !ok {
+			fail(c, 404, "node not found")
+		} else {
+			c.JSON(200, blocked)
+		}
+	})
 	admin.DELETE("/nodes/:id", func(_ context.Context, c *app.RequestContext) {
 		ok, err := s.Store.deleteNode(c.Param("id"))
 		if err != nil {
 			internalError(c)
 		} else if !ok {
 			fail(c, 404, "node not found")
+		} else {
+			c.Status(204)
+		}
+	})
+	admin.GET("/blocked-nodes", func(_ context.Context, c *app.RequestContext) {
+		blocked, err := s.Store.blockedNodes()
+		if err != nil {
+			internalError(c)
+			return
+		}
+		c.JSON(200, blocked)
+	})
+	admin.DELETE("/blocked-nodes/:id", func(_ context.Context, c *app.RequestContext) {
+		ok, err := s.Store.unblockNode(c.Param("id"))
+		if err != nil {
+			internalError(c)
+		} else if !ok {
+			fail(c, 404, "blocked node not found")
 		} else {
 			c.Status(204)
 		}
@@ -330,12 +358,16 @@ func (s *Server) register(_ context.Context, c *app.RequestContext) {
 		fail(c, 400, err.Error())
 		return
 	}
-	var exists int
-	if err := s.Store.db.QueryRow(`SELECT count(*) FROM (SELECT id FROM nodes WHERE id=? UNION SELECT id FROM revoked_nodes WHERE id=?)`, r.ID, r.ID).Scan(&exists); err != nil {
+	blocked, enrolled, err := s.Store.nodeEnrollConflict(r.ID)
+	if err != nil {
 		internalError(c)
 		return
 	}
-	if exists > 0 {
+	if blocked {
+		fail(c, 409, "node identity is blocked")
+		return
+	}
+	if enrolled {
 		fail(c, 409, "node identity already enrolled")
 		return
 	}
@@ -351,8 +383,21 @@ func (s *Server) heartbeat(_ context.Context, c *app.RequestContext) {
 	if !bind(c, &r) {
 		return
 	}
-	if !s.Store.nodeAuthorized(r.ID, bearer(c)) {
+	if !validID.MatchString(r.ID) {
 		fail(c, 401, "invalid node token")
+		return
+	}
+	auth, err := s.Store.checkNodeAuth(r.ID, bearer(c))
+	if err != nil {
+		internalError(c)
+		return
+	}
+	switch auth {
+	case nodeAuthDenied:
+		fail(c, 401, "invalid node token")
+		return
+	case nodeAuthDeleted:
+		fail(c, 410, "node deleted; re-enrollment required")
 		return
 	}
 	if len(r.ConfigHash) > 128 || len(r.Version) > 80 || len(r.Cores) > 8 {

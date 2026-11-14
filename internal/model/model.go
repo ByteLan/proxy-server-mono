@@ -57,6 +57,16 @@ type Node struct {
 	Endpoints  []Endpoint   `json:"endpoints"`
 }
 
+type BlockedNode struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Server    string `json:"server,omitempty"`
+	OS        string `json:"os,omitempty"`
+	Arch      string `json:"arch,omitempty"`
+	Version   string `json:"version,omitempty"`
+	BlockedAt int64  `json:"blocked_at"`
+}
+
 type RouteGroup struct {
 	Custom  bool     `json:"custom"`
 	NodeIDs []string `json:"node_ids"`

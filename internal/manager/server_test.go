@@ -120,13 +120,42 @@ func TestDynamicSubscriptionsAndCredentials(t *testing.T) {
 	if bytes.Contains(raw, []byte("192.0.2.2")) {
 		t.Fatal("disabled node still exported")
 	}
+	// 1) Non-blocking Delete: removes node from list & subscriptions, returns 410 on old token, and allows autonomous re-login!
 	mustCode(t, s, "DELETE", "/api/admin/nodes/node-2", adminTestToken, nil, 204)
-	mustCode(t, s, "POST", "/api/agent/register", enrollTestToken, model.RegisterRequest{ID: "node-2", Name: "revoked"}, 409)
-	mustCode(t, s, "POST", "/api/agent/heartbeat", token2, model.HeartbeatRequest{ID: "node-2"}, 401)
 	raw = mustCode(t, s, "GET", subPath, "", nil, 200)
 	if !bytes.Contains(raw, []byte("DIRECT")) {
-		t.Fatal("empty subscription invalid")
+		t.Fatal("empty subscription invalid after node deletion")
 	}
+	blockedRaw := mustCode(t, s, "GET", "/api/admin/blocked-nodes", adminTestToken, nil, 200)
+	var blockedList []model.BlockedNode
+	if err := json.Unmarshal(blockedRaw, &blockedList); err != nil || len(blockedList) != 0 {
+		t.Fatalf("deleted node must not enter blacklist: %+v (err=%v)", blockedList, err)
+	}
+	// Wrong token for an active node (node-1) must still get 401, never 410.
+	mustCode(t, s, "POST", "/api/agent/heartbeat", "wrong-token", model.HeartbeatRequest{ID: "node-1"}, 401)
+	// Deleted node-2 gets 410 Gone on old token and can immediately re-register with ENROLL_TOKEN.
+	mustCode(t, s, "POST", "/api/agent/heartbeat", token2, model.HeartbeatRequest{ID: "node-2"}, 410)
+	token2Reenrolled := enroll(t, s, "node-2", "192.0.2.2")
+	mustCode(t, s, "POST", "/api/agent/heartbeat", token2Reenrolled, model.HeartbeatRequest{ID: "node-2"}, 200)
+
+	// 2) Block (Blacklist): kicks node from list, blocks heartbeat (401) & re-register (409) until unblocked.
+	blockRespRaw := mustCode(t, s, "POST", "/api/admin/nodes/node-2/block", adminTestToken, nil, 200)
+	var blockedItem model.BlockedNode
+	if err := json.Unmarshal(blockRespRaw, &blockedItem); err != nil || blockedItem.ID != "node-2" || blockedItem.Server != "192.0.2.2" {
+		t.Fatalf("unexpected blocked node response: %+v (err=%v)", blockedItem, err)
+	}
+	blockedRaw = mustCode(t, s, "GET", "/api/admin/blocked-nodes", adminTestToken, nil, 200)
+	if err := json.Unmarshal(blockedRaw, &blockedList); err != nil || len(blockedList) != 1 || blockedList[0].ID != "node-2" {
+		t.Fatalf("expected node-2 in blacklist: %+v (err=%v)", blockedList, err)
+	}
+	mustCode(t, s, "POST", "/api/agent/register", enrollTestToken, model.RegisterRequest{ID: "node-2", Name: "blocked"}, 409)
+	mustCode(t, s, "POST", "/api/agent/heartbeat", token2Reenrolled, model.HeartbeatRequest{ID: "node-2"}, 401)
+
+	// 3) Unblock: removes from blacklist so old heartbeat gets 410 and node can re-register autonomously.
+	mustCode(t, s, "DELETE", "/api/admin/blocked-nodes/node-2", adminTestToken, nil, 204)
+	mustCode(t, s, "POST", "/api/agent/heartbeat", token2Reenrolled, model.HeartbeatRequest{ID: "node-2"}, 410)
+	token2AfterUnblock := enroll(t, s, "node-2", "192.0.2.2")
+	mustCode(t, s, "POST", "/api/agent/heartbeat", token2AfterUnblock, model.HeartbeatRequest{ID: "node-2"}, 200)
 	raw = mustCode(t, s, "POST", "/api/admin/subscriptions/"+created.Subscription.ID+"/rotate", adminTestToken, nil, 200)
 	mustCode(t, s, "GET", subPath, "", nil, 404)
 	var rotated struct {
@@ -166,7 +195,9 @@ func TestSiteRoutesPersistenceNodeDeletionAndLegacyMigration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = legacyDB.Exec(`CREATE TABLE subscriptions(id TEXT PRIMARY KEY,name TEXT NOT NULL,node_ids TEXT NOT NULL,protocols TEXT NOT NULL,enabled INTEGER NOT NULL,token_hash TEXT NOT NULL UNIQUE,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL);
+	_, err = legacyDB.Exec(`CREATE TABLE revoked_nodes(id TEXT PRIMARY KEY);
+	INSERT INTO revoked_nodes VALUES('legacy-revoked');
+	CREATE TABLE subscriptions(id TEXT PRIMARY KEY,name TEXT NOT NULL,node_ids TEXT NOT NULL,protocols TEXT NOT NULL,enabled INTEGER NOT NULL,token_hash TEXT NOT NULL UNIQUE,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL);
 	INSERT INTO subscriptions VALUES('legacy1','legacy','[]','[]',1,'legacyhash',100,100);`)
 	legacyDB.Close()
 	if err != nil {
