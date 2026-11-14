@@ -9,6 +9,12 @@ import (
 )
 
 type parsedConfig struct {
+	Sniffer struct {
+		Enable              bool `yaml:"enable"`
+		ForceDNSMapping     bool `yaml:"force-dns-mapping"`
+		ParsePureIP         bool `yaml:"parse-pure-ip"`
+		OverrideDestination bool `yaml:"override-destination"`
+	} `yaml:"sniffer"`
 	Proxies []map[string]any `yaml:"proxies"`
 	Groups  []struct {
 		Name           string   `yaml:"name"`
@@ -87,6 +93,9 @@ func TestRenderProtocolParametersAndReferences(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := parseYAML(t, raw)
+	if !cfg.Sniffer.Enable || !cfg.Sniffer.ForceDNSMapping || !cfg.Sniffer.ParsePureIP || !cfg.Sniffer.OverrideDestination {
+		t.Fatalf("sniffer pure-IP override must be enabled to defeat GFW cached DNS poisoning: %+v", cfg.Sniffer)
+	}
 	if len(cfg.Proxies) != 3 {
 		t.Fatal("missing endpoints")
 	}

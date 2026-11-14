@@ -314,6 +314,28 @@ func RenderSubscription(nodes []model.Node, sub model.Subscription) ([]byte, err
 			"geosite": "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geosite.dat",
 			"mmdb":    "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/country.mmdb",
 		},
+		"sniffer": map[string]any{
+			"enable":               true,
+			"force-dns-mapping":    true,
+			"parse-pure-ip":        true,
+			"override-destination": true,
+			"sniff": map[string]any{
+				"HTTP": map[string]any{
+					"ports":                []any{80, "8080-8880"},
+					"override-destination": true,
+				},
+				"TLS": map[string]any{
+					"ports": []int{443, 8443},
+				},
+				"QUIC": map[string]any{
+					"ports": []int{443, 8443},
+				},
+			},
+			"skip-domain": []string{
+				"Mijia Cloud",
+				"+.push.apple.com",
+			},
+		},
 		"dns": map[string]any{
 			"enable":                  true,
 			"ipv6":                    false,

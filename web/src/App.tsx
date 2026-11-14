@@ -839,7 +839,7 @@ export default function App() {
           <Alert type="warning" content="该订阅创建于旧版本，尚未保存可查看链接。点击下方「重置链接」生成一次后即可永久反复查看。" />
         </div>
       )}
-      <div className="subscription-steps"><strong>在 Clash Verge 中使用</strong><ol><li>打开「订阅」，粘贴上方链接直接导入（纯 IP 环境优先复制 HTTP 订阅链接）。</li><li>此后在控制台增删节点或调整 Claude / ChatGPT / Google 专属分流，无需更换链接，在 Clash 中点刷新即可同步。</li></ol></div>
+      <div className="subscription-steps"><strong>在 Clash Verge 中使用</strong><ol><li>打开「订阅」，粘贴上方链接直接导入（纯 IP 环境优先复制 HTTP 订阅链接）。</li><li>若需登录或使用 <strong>Antigravity / Claude Code / Codex / 终端 CLI</strong> 等非浏览器应用，请在 Clash Verge 首页同时开启<strong>「虚拟网卡模式（Tun 模式）」</strong>（Go / CLI 进程默认不读取 macOS / Windows 系统代理）。</li><li>此后在控制台增删节点或调整专属分流，无需更换链接，在 Clash 中点刷新即可同步。</li></ol></div>
     </Modal>
     <Modal title={`配置预览 · ${preview?.name || ''}`} visible={Boolean(preview)} onCancel={() => setPreview(null)} footer={<Space><Button onClick={downloadYAML}>下载 YAML</Button><Button icon={<IconCopy />} onClick={() => void copy(preview?.yaml || '')}>复制配置</Button><Button type="primary" onClick={() => setPreview(null)}>关闭</Button></Space>} style={{ width: 'min(820px, 94vw)' }} unmountOnExit>
       <Alert type="warning" content="配置包含真实代理凭据，请勿公开分享或粘贴到日志。" /><pre className="yaml-preview">{preview?.yaml}</pre>
